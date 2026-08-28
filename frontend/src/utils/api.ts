@@ -5,7 +5,7 @@ const BACKEND_URL_KEY = 'viralist_backend_url';
 const AUTH_TOKEN_KEY = 'viralist_auth_token';
 // A trycloudflare URL is ephemeral. A production Vercel build must provide its
 // stable backend through VITE_API_URL (or the user must connect it in the UI).
-export const LIVE_TUNNEL_URL = String((import.meta as any).env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
+export const LIVE_TUNNEL_URL = String((import.meta as any).env?.VITE_API_URL || 'https://cam-cube-entries-surname.trycloudflare.com').trim().replace(/\/+$/, '');
 
 // Read query params from URL if present (e.g. ?backend=https://...&token=v1...)
 function getInitialBackendUrl(): string {
