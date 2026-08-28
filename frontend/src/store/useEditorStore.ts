@@ -1081,9 +1081,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const chosenStyle = PRESET_STYLES[preset] || PRESET_STYLES.mrbeast;
 
-    // Client-side kinetic caption generation fallback
-    const text = (rawText || state.activeScriptText || "THE BIGGEST MISTAKE FOUNDERS MAKE IS HIRING TOO LATE BEFORE BUYING BACK TIME").trim();
-    const words = text.split(/\s+/).map((w, idx) => ({
+    try {
+      const res = await apiFetch('/api/ai/auto_caption', {
+        method: 'POST',
+        body: JSON.stringify({ rawText: rawText || undefined, preset, voiceCode, rate, autoDetectAudio })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.timeline) {
+          const history = state.project ? pushHistory(state) : {};
+          set({ project: data.timeline, audioVersion: Date.now(), ...history });
+        }
+        return data;
+      }
+    } catch (e) {
+      console.info("Backend transcription unreachable, generating client-side captions:", e);
+    }
+
+    // Client-side kinetic caption generation fallback (when backend Whisper is offline)
+    const activeVideo = state.project?.clips.find(c => c.trackId === 'trk_v1' && c.assetType === 'video');
+    const fallbackText = rawText || state.activeScriptText || (activeVideo ? activeVideo.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ') : "VIRAL CONTENT STRATEGY REVEALED");
+    const words = fallbackText.split(/\s+/).map((w, idx) => ({
       word: chosenStyle.uppercase ? w.toUpperCase() : w,
       start: Number((idx * 0.35).toFixed(2)),
       end: Number(((idx + 1) * 0.35).toFixed(2)),
@@ -1122,23 +1140,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       });
     }
 
-    try {
-      const res = await apiFetch('/api/ai/auto_caption', {
-        method: 'POST',
-        body: JSON.stringify({ rawText, preset, voiceCode, rate, autoDetectAudio })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.timeline) {
-          set({ project: data.timeline, audioVersion: Date.now() });
-        }
-        return data;
-      }
-    } catch (e) {
-      console.info("Generated captions locally:", generatedCaptions.length);
-    } finally {
-      set({ isProcessing: false });
-    }
+    set({ isProcessing: false });
     return { success: true, captions: generatedCaptions };
   },
 

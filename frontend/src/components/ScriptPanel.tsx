@@ -49,8 +49,10 @@ export const ScriptPanel: React.FC = () => {
   }, []);
 
   const handleTranscribeOrSynthesize = async () => {
+    // When transcribing video audio, leave text empty so Whisper transcribes the actual media file
+    const textToPass = audioSourceMode === 'video_audio' ? undefined : (rawText.trim() || undefined);
     await autoCaption(
-      rawText,
+      textToPass,
       'hero_depth_action',
       selectedVoice,
       voiceRate,
