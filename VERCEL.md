@@ -1,6 +1,8 @@
 # Deploying Viralist to Vercel
 
-You can deploy the **Viralist AI Video Editor Studio** to Vercel with one click so human creators and team members can access the full NLE studio interface from any browser, tablet, or device.
+> 🌐 **Live Vercel Studio URL**: [https://frontend-psi-ruby-50.vercel.app](https://frontend-psi-ruby-50.vercel.app)
+
+You can access the **Viralist AI Video Editor Studio** live on Vercel from any browser, tablet, or device.
 
 ---
 
