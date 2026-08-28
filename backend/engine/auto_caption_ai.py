@@ -3,6 +3,87 @@ from typing import List, Dict, Any, Optional
 from models.schema import CaptionItem, CaptionStyle, WordTimestamp
 
 class AutoCaptionAI:
+    PRESETS: Dict[str, Dict[str, Any]] = {
+        "mrbeast": {
+            "layoutMode": "hero_depth_action",
+            "fontSize": 32,
+            "fontFamily": "'Montserrat', sans-serif",
+            "textColor": "#FFFFFF",
+            "highlightColor": "#FACC15",
+            "strokeColor": "#000000",
+            "strokeWidth": 4,
+            "animation": "pop",
+            "uppercase": True,
+            "powerWordColor": "#FACC15",
+            "bridgeFontFamily": "'Montserrat', sans-serif",
+        },
+        "hormozi": {
+            "layoutMode": "hero_depth_action",
+            "fontSize": 28,
+            "fontFamily": "'Montserrat', sans-serif",
+            "textColor": "#FFFFFF",
+            "highlightColor": "#EF4444",
+            "strokeColor": "#000000",
+            "strokeWidth": 3,
+            "animation": "pop",
+            "uppercase": True,
+            "powerWordColor": "#EF4444",
+            "bridgeFontFamily": "'Playfair Display', serif",
+        },
+        "ali_abdaal": {
+            "layoutMode": "lower_third_clean",
+            "fontSize": 22,
+            "fontFamily": "'Inter', sans-serif",
+            "textColor": "#FFFFFF",
+            "highlightColor": "#38BDF8",
+            "strokeColor": "#000000",
+            "strokeWidth": 2,
+            "animation": "fade",
+            "uppercase": False,
+            "powerWordColor": "#38BDF8",
+            "bridgeFontFamily": "'Inter', sans-serif",
+        },
+        "neon_glow": {
+            "layoutMode": "split_shoulder",
+            "fontSize": 28,
+            "fontFamily": "'Outfit', sans-serif",
+            "textColor": "#FFFFFF",
+            "highlightColor": "#00FF88",
+            "strokeColor": "#000000",
+            "strokeWidth": 3,
+            "animation": "bounce",
+            "uppercase": True,
+            "powerWordColor": "#00FF88",
+            "bridgeFontFamily": "'Outfit', sans-serif",
+        },
+        "impact_gold": {
+            "layoutMode": "stacked_list",
+            "fontSize": 34,
+            "fontFamily": "'Bebas Neue', Impact, sans-serif",
+            "textColor": "#FFFFFF",
+            "highlightColor": "#F59E0B",
+            "strokeColor": "#000000",
+            "strokeWidth": 4,
+            "animation": "pop",
+            "uppercase": True,
+            "powerWordColor": "#F59E0B",
+            "bridgeFontFamily": "'Bebas Neue', Impact, sans-serif",
+        },
+        "editorial_serif": {
+            "layoutMode": "lower_third_clean",
+            "fontSize": 24,
+            "fontFamily": "'Playfair Display', serif",
+            "textColor": "#F8FAFC",
+            "highlightColor": "#E2E8F0",
+            "strokeColor": "#0F172A",
+            "strokeWidth": 2,
+            "animation": "fade",
+            "uppercase": False,
+            "powerWordColor": "#F59E0B",
+            "bridgeFontFamily": "'Playfair Display', serif",
+        },
+    }
+
     @staticmethod
     def calculate_phonetic_word_timestamps(words: List[str], card_start: float, card_end: float) -> List[WordTimestamp]:
         if not words:
@@ -50,15 +131,16 @@ class AutoCaptionAI:
 
         return result
 
-    @staticmethod
+    @classmethod
     def analyze_and_caption_transcript(
+        cls,
         raw_text: str = "",
         total_duration: float = 60.0,
         preset_name: str = "auto",
         speech_boundaries: Optional[List[Dict[str, Any]]] = None
     ) -> List[CaptionItem]:
         """
-        Generates perfectly synced, gapless kinetic caption cards using exact neural timestamps.
+        Generates choreographed, gapless kinetic caption cards using exact neural timestamps and chosen style preset.
         """
         boundaries = speech_boundaries or []
 
@@ -89,8 +171,14 @@ class AutoCaptionAI:
         power_action_words = {
             "BERT", "GPT", "TRANSFORMER", "NETWORK", "ENCODERS",
             "DECODERS", "DATA", "LANGUAGE", "SENTENCE", "ARCHITECTURE",
-            "PRETRAINED", "OBJECTIVE", "DECISION", "LEARNING", "MODEL", "VERSUS"
+            "PRETRAINED", "OBJECTIVE", "DECISION", "LEARNING", "MODEL", "VERSUS",
+            "BIGGEST", "MISTAKE", "FOUNDERS", "HIRING", "TIME", "GROWTH", "SCALE",
+            "VIRAL", "REVENUE", "AI", "FRAMEWORK", "SECRET", "STOP", "PROFIT"
         }
+
+        # Resolve Preset Configuration
+        preset_key = preset_name.lower().replace(" ", "_").replace("-", "_")
+        config = cls.PRESETS.get(preset_key) or cls.PRESETS.get("mrbeast" if "beast" in preset_key or "yellow" in preset_key else "hormozi" if "hormozi" in preset_key or "action" in preset_key else "ali_abdaal" if "ali" in preset_key or "clean" in preset_key else "neon_glow" if "neon" in preset_key or "glow" in preset_key else "impact_gold" if "impact" in preset_key or "gold" in preset_key else "mrbeast")
 
         captions: List[CaptionItem] = []
 
@@ -115,7 +203,7 @@ class AutoCaptionAI:
                     for w in bound["words"]
                 ]
             else:
-                words_ts = AutoCaptionAI.calculate_phonetic_word_timestamps(raw_words, c_start, c_end)
+                words_ts = cls.calculate_phonetic_word_timestamps(raw_words, c_start, c_end)
 
             card_power_word = bound.get("power", "")
             if not card_power_word or card_power_word not in power_action_words:
@@ -141,27 +229,27 @@ class AutoCaptionAI:
                 bottom_text = " ".join(raw_words[1:]) if len(raw_words) > 1 else ""
 
             style = CaptionStyle(
-                layoutMode='hero_depth_action',
-                fontSize=26,
-                fontFamily="'Montserrat', sans-serif",
-                textColor="#FFFFFF",
-                highlightColor="#EF4444",
-                strokeColor="#000000",
-                strokeWidth=3,
-                animation='pop',
+                layoutMode=config.get("layoutMode", "hero_depth_action"),
+                fontSize=config.get("fontSize", 28),
+                fontFamily=config.get("fontFamily", "'Montserrat', sans-serif"),
+                textColor=config.get("textColor", "#FFFFFF"),
+                highlightColor=config.get("highlightColor", "#FACC15"),
+                strokeColor=config.get("strokeColor", "#000000"),
+                strokeWidth=config.get("strokeWidth", 3),
+                animation=config.get("animation", "pop"),
                 positionY=0.72,
                 positionX=0.5,
-                uppercase=True,
+                uppercase=config.get("uppercase", True),
                 backgroundColor="#000000",
                 backgroundOpacity=0.0,
                 heroConfig={
                     "topBridgeText": top_bridge,
                     "powerWord": card_power_word,
                     "bottomText": bottom_text,
-                    "powerWordColor": "#EF4444",
-                    "bridgeFontFamily": "'Playfair Display', serif",
+                    "powerWordColor": config.get("powerWordColor", "#FACC15"),
+                    "bridgeFontFamily": config.get("bridgeFontFamily", "'Montserrat', sans-serif"),
                     "bridgeStyle": "italic",
-                    "bridgeCase": "uppercase"
+                    "bridgeCase": "uppercase" if config.get("uppercase") else "capitalize"
                 }
             )
 

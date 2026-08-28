@@ -999,22 +999,100 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     } catch (e) {}
   },
 
-  autoCaption: async (rawText, preset = 'auto', voiceCode = 'VOICE_CHRIS_CREATOR', rate = '+18%', autoDetectAudio = true) => {
+  autoCaption: async (rawText, preset = 'mrbeast', voiceCode = 'VOICE_CHRIS_CREATOR', rate = '+18%', autoDetectAudio = true) => {
     const state = get();
     set({ isProcessing: true });
 
-    // Client-side instant kinetic caption generation fallback
-    const text = (rawText || state.activeScriptText || "THE BIGGEST MISTAKE FOUNDERS MAKE IS HIRING TOO LATE").trim();
+    // Preset Style Dictionary
+    const PRESET_STYLES: Record<string, any> = {
+      mrbeast: {
+        fontSize: 46,
+        fontFamily: "'Montserrat', sans-serif",
+        textColor: '#FFFFFF',
+        highlightColor: '#FACC15',
+        strokeColor: '#000000',
+        strokeWidth: 4,
+        uppercase: true,
+        animation: 'pop',
+        layoutMode: 'hero_depth_action',
+        powerWordColor: '#FACC15',
+      },
+      hormozi: {
+        fontSize: 42,
+        fontFamily: "'Montserrat', sans-serif",
+        textColor: '#FFFFFF',
+        highlightColor: '#EF4444',
+        strokeColor: '#000000',
+        strokeWidth: 3,
+        uppercase: true,
+        animation: 'pop',
+        layoutMode: 'hero_depth_action',
+        powerWordColor: '#EF4444',
+      },
+      ali_abdaal: {
+        fontSize: 34,
+        fontFamily: "'Inter', sans-serif",
+        textColor: '#FFFFFF',
+        highlightColor: '#38BDF8',
+        strokeColor: '#000000',
+        strokeWidth: 2,
+        uppercase: false,
+        animation: 'fade',
+        layoutMode: 'lower_third_clean',
+        powerWordColor: '#38BDF8',
+      },
+      neon_glow: {
+        fontSize: 42,
+        fontFamily: "'Outfit', sans-serif",
+        textColor: '#FFFFFF',
+        highlightColor: '#00FF88',
+        strokeColor: '#000000',
+        strokeWidth: 3,
+        uppercase: true,
+        animation: 'bounce',
+        layoutMode: 'split_shoulder',
+        powerWordColor: '#00FF88',
+      },
+      impact_gold: {
+        fontSize: 48,
+        fontFamily: "'Bebas Neue', Impact, sans-serif",
+        textColor: '#FFFFFF',
+        highlightColor: '#F59E0B',
+        strokeColor: '#000000',
+        strokeWidth: 4,
+        uppercase: true,
+        animation: 'pop',
+        layoutMode: 'stacked_list',
+        powerWordColor: '#F59E0B',
+      },
+      editorial_serif: {
+        fontSize: 36,
+        fontFamily: "'Playfair Display', serif",
+        textColor: '#F8FAFC',
+        highlightColor: '#E2E8F0',
+        strokeColor: '#0F172A',
+        strokeWidth: 2,
+        uppercase: false,
+        animation: 'fade',
+        layoutMode: 'lower_third_clean',
+        powerWordColor: '#F59E0B',
+      }
+    };
+
+    const chosenStyle = PRESET_STYLES[preset] || PRESET_STYLES.mrbeast;
+
+    // Client-side kinetic caption generation fallback
+    const text = (rawText || state.activeScriptText || "THE BIGGEST MISTAKE FOUNDERS MAKE IS HIRING TOO LATE BEFORE BUYING BACK TIME").trim();
     const words = text.split(/\s+/).map((w, idx) => ({
-      word: w.toUpperCase(),
+      word: chosenStyle.uppercase ? w.toUpperCase() : w,
       start: Number((idx * 0.35).toFixed(2)),
       end: Number(((idx + 1) * 0.35).toFixed(2)),
     }));
 
-    const chunkDuration = 2.5;
     const generatedCaptions: CaptionItem[] = [];
-    for (let i = 0; i < words.length; i += 5) {
-      const slice = words.slice(i, i + 5);
+    for (let i = 0; i < words.length; i += 4) {
+      const slice = words.slice(i, i + 4);
+      const cardPower = slice[0].word.toUpperCase();
       generatedCaptions.push({
         id: `cap_auto_${i}`,
         start: slice[0].start,
@@ -1022,15 +1100,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         text: slice.map(s => s.word).join(' '),
         words: slice,
         style: {
-          fontSize: 46,
-          fontFamily: state.selectedFont || "'Montserrat', sans-serif",
-          textColor: '#FFFFFF',
-          highlightColor: '#FACC15',
-          strokeColor: '#000000',
-          strokeWidth: 4,
-          uppercase: true,
-          animation: 'pop',
-          layoutMode: 'hero_depth_action',
+          ...chosenStyle,
+          heroConfig: {
+            topBridgeText: "",
+            powerWord: cardPower,
+            bottomText: slice.slice(1).map(s => s.word).join(' '),
+            powerWordColor: chosenStyle.powerWordColor,
+            bridgeFontFamily: chosenStyle.fontFamily,
+            bridgeStyle: 'italic',
+            bridgeCase: chosenStyle.uppercase ? 'uppercase' : 'capitalize'
+          }
         }
       });
     }
@@ -1039,8 +1118,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const history = pushHistory(state);
       set({
         project: { ...state.project, captions: generatedCaptions },
-        ...history,
-        isProcessing: false
+        ...history
       });
     }
 
@@ -1051,11 +1129,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.timeline) set({ project: data.timeline, audioVersion: Date.now() });
+        if (data.timeline) {
+          set({ project: data.timeline, audioVersion: Date.now() });
+        }
         return data;
       }
     } catch (e) {
-      console.info("Generated captions client-side:", generatedCaptions.length);
+      console.info("Generated captions locally:", generatedCaptions.length);
     } finally {
       set({ isProcessing: false });
     }
