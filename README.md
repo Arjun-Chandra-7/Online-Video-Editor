@@ -1,6 +1,6 @@
-# Viralist — agent-native video editor
+# Viralist Editor— agent-native video editor
 
-Viralist is a local, non-linear video editor designed to be easier for an AI agent to operate than a GUI. One MCP connection gives an agent structured timeline inspection, deterministic edits, semantic diffs, dry runs, atomic batches, snapshots, undo/redo, captions, voiceover, pacing analysis, project persistence, and hardware-aware MP4 export. A browser UI at `http://localhost:8080` stays synchronized for human review.
+Viralist is a local, non-linear video editor designed to be easier for an AI agent to operate than a GUI made for the main project called Viralyst. One MCP connection gives an agent structured timeline inspection, deterministic edits, semantic diffs, dry runs, atomic batches, snapshots, undo/redo, captions, voiceover, pacing analysis, project persistence, and hardware-aware MP4 export. A browser UI at `http://localhost:8080` stays synchronized for human review.
 
 The MCP is the product interface—not a demo wrapper. It and the web UI mutate the same live `TimelineEngine`, so an agent never edits an invisible second copy of the project.
 
