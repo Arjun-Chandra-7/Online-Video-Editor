@@ -1340,10 +1340,28 @@ async def ai_auto_caption(body: Dict[str, Any] = {}):
         detected_transcript = ""
         video_dur = timeline_engine.state.duration
 
-        if auto_detect_audio and main_v1_clip and main_v1_clip.assetUrl:
-            filename = main_v1_clip.assetUrl.split("/")[-1]
-            video_path = ASSETS_DIR / filename
-            if video_path.exists() and AudioTranscriber.check_video_has_audio(video_path):
+        if auto_detect_audio:
+            video_path = None
+            if main_v1_clip and main_v1_clip.assetUrl and not main_v1_clip.assetUrl.startswith("blob:"):
+                filename = main_v1_clip.assetUrl.split("/")[-1]
+                candidate = ASSETS_DIR / filename
+                if candidate.exists():
+                    video_path = candidate
+
+            if not video_path:
+                for ast in timeline_engine.state.assets:
+                    if ast.type == "video" and ast.url and not ast.url.startswith("blob:"):
+                        candidate = ASSETS_DIR / ast.url.split("/")[-1]
+                        if candidate.exists():
+                            video_path = candidate
+                            break
+
+            if not video_path:
+                recent_videos = sorted([f for f in ASSETS_DIR.glob("*.mp4") if not f.name.startswith("preview_")], key=lambda x: x.stat().st_mtime, reverse=True)
+                if recent_videos:
+                    video_path = recent_videos[0]
+
+            if video_path and video_path.exists() and AudioTranscriber.check_video_has_audio(video_path):
                 video_dur = AudioTranscriber.get_media_duration(video_path)
                 target_voiceover = ASSETS_DIR / "voiceover.mp3"
                 if AudioTranscriber.extract_audio_from_video(video_path, target_voiceover):

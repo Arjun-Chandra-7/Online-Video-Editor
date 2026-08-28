@@ -1082,66 +1082,69 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const chosenStyle = PRESET_STYLES[preset] || PRESET_STYLES.mrbeast;
 
     try {
-      const res = await apiFetch('/api/ai/auto_caption', {
-        method: 'POST',
-        body: JSON.stringify({ rawText: rawText || undefined, preset, voiceCode, rate, autoDetectAudio })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.timeline) {
-          const history = state.project ? pushHistory(state) : {};
-          set({ project: data.timeline, audioVersion: Date.now(), ...history });
-        }
-        return data;
-      }
-    } catch (e) {
-      console.info("Backend transcription unreachable, generating client-side captions:", e);
-    }
-
-    // Client-side kinetic caption generation fallback (when backend Whisper is offline)
-    const activeVideo = state.project?.clips.find(c => c.trackId === 'trk_v1' && c.assetType === 'video');
-    const fallbackText = rawText || state.activeScriptText || (activeVideo ? activeVideo.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ') : "VIRAL CONTENT STRATEGY REVEALED");
-    const words = fallbackText.split(/\s+/).map((w, idx) => ({
-      word: chosenStyle.uppercase ? w.toUpperCase() : w,
-      start: Number((idx * 0.35).toFixed(2)),
-      end: Number(((idx + 1) * 0.35).toFixed(2)),
-    }));
-
-    const generatedCaptions: CaptionItem[] = [];
-    for (let i = 0; i < words.length; i += 4) {
-      const slice = words.slice(i, i + 4);
-      const cardPower = slice[0].word.toUpperCase();
-      generatedCaptions.push({
-        id: `cap_auto_${i}`,
-        start: slice[0].start,
-        end: slice[slice.length - 1].end,
-        text: slice.map(s => s.word).join(' '),
-        words: slice,
-        style: {
-          ...chosenStyle,
-          heroConfig: {
-            topBridgeText: "",
-            powerWord: cardPower,
-            bottomText: slice.slice(1).map(s => s.word).join(' '),
-            powerWordColor: chosenStyle.powerWordColor,
-            bridgeFontFamily: chosenStyle.fontFamily,
-            bridgeStyle: 'italic',
-            bridgeCase: chosenStyle.uppercase ? 'uppercase' : 'capitalize'
+      try {
+        const res = await apiFetch('/api/ai/auto_caption', {
+          method: 'POST',
+          body: JSON.stringify({ rawText: rawText || undefined, preset, voiceCode, rate, autoDetectAudio })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.timeline) {
+            const history = state.project ? pushHistory(state) : {};
+            set({ project: data.timeline, audioVersion: Date.now(), ...history, isProcessing: false });
           }
+          return data;
         }
-      });
-    }
+      } catch (e) {
+        console.info("Backend transcription unreachable, generating client-side captions:", e);
+      }
 
-    if (state.project) {
-      const history = pushHistory(state);
-      set({
-        project: { ...state.project, captions: generatedCaptions },
-        ...history
-      });
-    }
+      // Client-side kinetic caption generation fallback (when backend Whisper is offline)
+      const activeVideo = state.project?.clips.find(c => c.trackId === 'trk_v1' && c.assetType === 'video');
+      const fallbackText = rawText || state.activeScriptText || (activeVideo ? activeVideo.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ') : "VIRAL CONTENT STRATEGY REVEALED");
+      const words = fallbackText.split(/\s+/).map((w, idx) => ({
+        word: chosenStyle.uppercase ? w.toUpperCase() : w,
+        start: Number((idx * 0.35).toFixed(2)),
+        end: Number(((idx + 1) * 0.35).toFixed(2)),
+      }));
 
-    set({ isProcessing: false });
-    return { success: true, captions: generatedCaptions };
+      const generatedCaptions: CaptionItem[] = [];
+      for (let i = 0; i < words.length; i += 4) {
+        const slice = words.slice(i, i + 4);
+        const cardPower = slice[0].word.toUpperCase();
+        generatedCaptions.push({
+          id: `cap_auto_${i}`,
+          start: slice[0].start,
+          end: slice[slice.length - 1].end,
+          text: slice.map(s => s.word).join(' '),
+          words: slice,
+          style: {
+            ...chosenStyle,
+            heroConfig: {
+              topBridgeText: "",
+              powerWord: cardPower,
+              bottomText: slice.slice(1).map(s => s.word).join(' '),
+              powerWordColor: chosenStyle.powerWordColor,
+              bridgeFontFamily: chosenStyle.fontFamily,
+              bridgeStyle: 'italic',
+              bridgeCase: chosenStyle.uppercase ? 'uppercase' : 'capitalize'
+            }
+          }
+        });
+      }
+
+      if (state.project) {
+        const history = pushHistory(state);
+        set({
+          project: { ...state.project, captions: generatedCaptions },
+          ...history
+        });
+      }
+
+      return { success: true, captions: generatedCaptions };
+    } finally {
+      set({ isProcessing: false });
+    }
   },
 
   triggerAutoCaption: async (rawTextOrPreset, voiceCode, preset) => {
