@@ -1095,8 +1095,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           }
           return data;
         }
+        const error = await res.json().catch(() => ({}));
+        const message = error?.detail?.message || error?.detail?.code || 'Live captioning failed. Check the connected backend and uploaded audio.';
+        if (autoDetectAudio || !rawText?.trim()) {
+          throw new Error(message);
+        }
       } catch (e) {
-        console.info("Backend transcription unreachable, generating client-side captions:", e);
+        if (autoDetectAudio || !rawText?.trim()) throw e;
+        console.info("Backend unavailable; generating captions only from explicitly supplied text:", e);
       }
 
       // Client-side kinetic caption generation fallback (when backend Whisper is offline)

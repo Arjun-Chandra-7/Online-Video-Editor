@@ -337,7 +337,9 @@ def job_auto_caption(body: Dict[str, Any]):
         def run(progress, cancelled):
             if cancelled.is_set(): raise EditorError("JOB_CANCELLED", "Auto-caption job cancelled.")
             progress(0.15, "Analyzing transcript and phonetic boundaries")
-            text = raw_text.strip() or "Stop doing this one mistake before scaling your business."
+            text = raw_text.strip()
+            if not text:
+                raise EditorError("SCRIPT_REQUIRED", "Auto-caption jobs require explicit script text; use the transcription job first for video audio.", http_status=422)
             captions = AutoCaptionAI.analyze_and_caption_transcript(
                 raw_text=text,
                 total_duration=timeline_engine.state.duration,
@@ -1394,9 +1396,17 @@ async def ai_auto_caption(body: Dict[str, Any] = {}):
                         "timeline": timeline_engine.inspect(),
                     }
 
-        text_to_synthesize = raw_text.strip() if raw_text.strip() else (
-            "The exact framework high performers use to scale ten times faster without burning out."
-        )
+                raise EditorError("TRANSCRIPTION_FAILED", "Audio extraction failed for the selected video.", retryable=True, recommended_action="Re-upload a supported video with an audio track, then retry.", http_status=422)
+
+            if video_path:
+                raise EditorError("VIDEO_HAS_NO_AUDIO", "The selected video has no readable audio stream to transcribe.", recommended_action="Upload a video with spoken audio or paste a script for captions.", http_status=422)
+
+            if not raw_text.strip():
+                raise EditorError("VIDEO_AUDIO_NOT_FOUND", "No uploaded video audio was available for live transcription.", recommended_action="Connect the production backend, upload the video there, then retry; or paste a script explicitly.", http_status=422)
+
+        text_to_synthesize = raw_text.strip()
+        if not text_to_synthesize:
+            raise EditorError("SCRIPT_REQUIRED", "Provide script text when live video-audio transcription is disabled.", http_status=422)
 
         boundaries = await VoiceEngine.synthesize(text_to_synthesize, voice_code=voice_code, rate=rate)
 

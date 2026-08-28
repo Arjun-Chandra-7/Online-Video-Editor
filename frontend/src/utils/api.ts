@@ -3,7 +3,9 @@ import { TimelineProject } from '../types/timeline';
 // Storage keys
 const BACKEND_URL_KEY = 'viralist_backend_url';
 const AUTH_TOKEN_KEY = 'viralist_auth_token';
-export const LIVE_TUNNEL_URL = 'https://trainers-republican-jacob-retirement.trycloudflare.com';
+// A trycloudflare URL is ephemeral. A production Vercel build must provide its
+// stable backend through VITE_API_URL (or the user must connect it in the UI).
+export const LIVE_TUNNEL_URL = String((import.meta as any).env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
 
 // Read query params from URL if present (e.g. ?backend=https://...&token=v1...)
 function getInitialBackendUrl(): string {
@@ -27,9 +29,10 @@ function getInitialBackendUrl(): string {
   const envUrl = ((import.meta as any).env?.VITE_API_URL || '');
   if (envUrl) return String(envUrl).trim().replace(/\/+$/, '');
 
-  // If on HTTPS (e.g. Vercel), default to active HTTPS Cloudflare tunnel
+  // A static Vercel deployment has no Python/Whisper backend of its own. Do
+  // not guess an old tunnel and then show fabricated captions as transcription.
   if (window.location.protocol === 'https:') {
-    return LIVE_TUNNEL_URL;
+    return '';
   }
   return 'http://localhost:8080';
 }
