@@ -81,7 +81,12 @@ class AudioTranscriber:
                 segments, info = model.transcribe(
                     str(media_path),
                     word_timestamps=True,
-                    beam_size=5
+                    beam_size=5,
+                    vad_filter=True,
+                    vad_parameters={"min_silence_duration_ms": 500},
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.6,
+                    compression_ratio_threshold=2.4,
                 )
 
                 all_words = []
@@ -100,6 +105,16 @@ class AudioTranscriber:
                                     "start": round(float(w.start), 2),
                                     "end": round(float(w.end), 2)
                                 })
+
+                transcript = " ".join(full_text_parts).strip()
+                # Never present Whisper hallucinations (commonly a single
+                # character repeated through silent/music-only audio) as live
+                # captions. The caller will return TRANSCRIPTION_FAILED and
+                # leave the prior caption state untouched.
+                compact = "".join(character for character in transcript if character.isalnum())
+                repeated_character = bool(compact) and max(compact.count(character) for character in set(compact)) / len(compact) > 0.65
+                if len(all_words) < 2 or repeated_character:
+                    return {"transcript": "", "boundaries": [], "errorCode": "TRANSCRIPTION_LOW_CONFIDENCE"}
 
                 if all_words:
                     boundaries: List[Dict[str, Any]] = []
@@ -123,7 +138,7 @@ class AudioTranscriber:
                         boundaries[idx]["end"] = max(boundaries[idx]["end"], next_card_start)
 
                     return {
-                        "transcript": " ".join(full_text_parts),
+                        "transcript": transcript,
                         "boundaries": boundaries
                     }
         except Exception as e:

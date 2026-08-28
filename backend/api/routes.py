@@ -1372,6 +1372,9 @@ async def ai_auto_caption(body: Dict[str, Any] = {}):
                     detected_transcript = trans_result.get("transcript", "")
                     boundaries = trans_result.get("boundaries", [])
 
+                    if not detected_transcript.strip() or not boundaries:
+                        raise EditorError(trans_result.get("errorCode", "TRANSCRIPTION_FAILED"), "No reliable speech was detected in this video. Captions were not changed.", recommended_action="Use a video with clear spoken audio, reduce music/noise, or paste an approved script.", http_status=422)
+
                     def mutate_trans():
                         timeline_engine.fit_timeline_to_duration(video_dur)
                         captions = AutoCaptionAI.analyze_and_caption_transcript(
