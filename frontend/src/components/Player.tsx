@@ -239,65 +239,63 @@ export const Player: React.FC = () => {
     }
   }, [isPlaying, activeAudioClip?.id, effectiveVolume]);
 
-  // 60FPS Playback Loop — Audio is the Master Clock for zero-drift audio/video sync
+  // 60FPS Playback Loop — Smooth delta-timed playback across video, audio, and image assets
   useEffect(() => {
     let animationFrameId: number;
+    let lastTime = performance.now();
 
-    const loop = () => {
+    const loop = (now: number) => {
       if (isPlaying) {
+        const delta = (now - lastTime) / 1000;
+        lastTime = now;
+
+        const currentPlayhead = useEditorStore.getState().project?.playhead || 0;
+        const currentDuration = useEditorStore.getState().project?.duration || 12.0;
         const aud = audioRef.current;
         const vid = videoRef.current;
+
+        let nextTime = currentPlayhead + delta;
 
         if (aud && !aud.paused && aud.currentTime > 0) {
           const currentAudioTime = aud.currentTime;
           const timelineAudioTime = activeAudioClip
             ? currentAudioTime - (activeAudioClip.sourceStart || 0) + activeAudioClip.timelineStart
             : currentAudioTime;
-          setPlayhead(timelineAudioTime);
+          nextTime = timelineAudioTime;
 
-          // Keep video in strict 60fps alignment with audio
-          if (vid && activeVideoClip) {
+          if (vid && activeVideoClip && !vid.paused) {
             const expectedVidTime = Math.max(0, (timelineAudioTime - activeVideoClip.timelineStart) + (activeVideoClip.sourceStart || 0));
             if (Math.abs(vid.currentTime - expectedVidTime) > 0.2) {
               vid.currentTime = Math.min(expectedVidTime, vid.duration || 1000);
             }
           }
-
-          if (timelineAudioTime >= duration || aud.ended) {
-            setIsPlaying(false);
-            setPlayhead(0);
-            aud.currentTime = 0;
-            if (vid) vid.currentTime = 0;
-          }
-        } else if (vid && activeVideoClip && !vid.paused) {
+        } else if (vid && !vid.paused && vid.readyState >= 2) {
           const currentVidTime = vid.currentTime;
-          const timelineTime = (currentVidTime - (activeVideoClip.sourceStart || 0)) + activeVideoClip.timelineStart;
-          setPlayhead(timelineTime);
-
-          if (timelineTime >= duration || vid.ended) {
-            setIsPlaying(false);
-            setPlayhead(0);
-            vid.currentTime = 0;
-          }
-        } else {
-          let nextTime = playhead + 1 / 30;
-          if (nextTime >= duration) {
-            nextTime = 0;
-            setIsPlaying(false);
-          }
-          setPlayhead(nextTime);
+          const timelineTime = (currentVidTime - (activeVideoClip?.sourceStart || 0)) + (activeVideoClip?.timelineStart || 0);
+          nextTime = timelineTime;
         }
 
-        if (!isMuted) {
-          const energy = Math.sin(playhead * 14) * 0.35 + 0.55;
-          setVuLeft(Math.min(100, Math.max(10, Math.floor(energy * 85 + Math.random() * 15))));
-          setVuRight(Math.min(100, Math.max(10, Math.floor(energy * 80 + Math.random() * 18))));
-        } else {
+        if (nextTime >= currentDuration) {
+          setIsPlaying(false);
+          setPlayhead(0);
+          if (aud) aud.currentTime = 0;
+          if (vid) vid.currentTime = 0;
           setVuLeft(0);
           setVuRight(0);
-        }
+        } else {
+          setPlayhead(nextTime);
 
-        animationFrameId = requestAnimationFrame(loop);
+          if (!isMuted) {
+            const energy = Math.sin(nextTime * 14) * 0.35 + 0.55;
+            setVuLeft(Math.min(100, Math.max(10, Math.floor(energy * 85 + Math.random() * 15))));
+            setVuRight(Math.min(100, Math.max(10, Math.floor(energy * 80 + Math.random() * 18))));
+          } else {
+            setVuLeft(0);
+            setVuRight(0);
+          }
+
+          animationFrameId = requestAnimationFrame(loop);
+        }
       } else {
         setVuLeft(0);
         setVuRight(0);
@@ -305,11 +303,14 @@ export const Player: React.FC = () => {
     };
 
     if (isPlaying) {
+      lastTime = performance.now();
       animationFrameId = requestAnimationFrame(loop);
     }
 
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying, duration, setPlayhead, setIsPlaying, isMuted, playhead, activeVideoClip, activeAudioClip]);
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+  }, [isPlaying, activeAudioClip?.id, activeVideoClip?.id, isMuted]);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -658,14 +659,22 @@ export const Player: React.FC = () => {
               className="w-full h-full relative flex items-center justify-center overflow-hidden transition-all duration-75 bg-black"
               style={getClipFXStyles(activeVideoClip)}
             >
-              <video
-                ref={videoRef}
-                className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'}`}
-                playsInline
-                muted={true}
-                preload="auto"
-                loop
-              />
+              {activeVideoClip.assetType === 'image' || activeVideoClip.assetUrl?.match(/\.(png|jpg|jpeg|webp|svg|gif)(\?.*)?$/i) || activeVideoClip.assetUrl?.includes('images.unsplash.com') ? (
+                <img
+                  src={resolveAssetUrl(activeVideoClip.assetUrl)}
+                  alt={activeVideoClip.name}
+                  className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'}`}
+                />
+              ) : (
+                <video
+                  ref={videoRef}
+                  className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'}`}
+                  playsInline
+                  muted={true}
+                  preload="auto"
+                  loop
+                />
+              )}
 
               {/* Film Grain Texture Overlay */}
               {activeEffects.includes('film_grain') && (

@@ -28,10 +28,96 @@ export const MediaPanel: React.FC = () => {
     if (!file) return;
 
     setIsUploading(true);
-    const formData = new FormData();
-    formData.append('file', file);
+    const objectUrl = URL.createObjectURL(file);
+    const mime = file.type || '';
+    const atype = mime.includes('video') || file.name.match(/\.(mp4|mov|webm|mkv)$/i) ? 'video'
+                : mime.includes('audio') || file.name.match(/\.(mp3|wav|ogg|m4a|aac)$/i) ? 'audio'
+                : 'image';
+
+    let measuredDuration = atype === 'image' ? 5.0 : 6.0;
 
     try {
+      if (atype === 'video') {
+        const tempVideo = document.createElement('video');
+        tempVideo.src = objectUrl;
+        await new Promise((resolve) => {
+          tempVideo.onloadedmetadata = () => {
+            if (tempVideo.duration && !isNaN(tempVideo.duration) && isFinite(tempVideo.duration)) {
+              measuredDuration = Math.round(tempVideo.duration * 10) / 10;
+            }
+            resolve(true);
+          };
+          tempVideo.onerror = () => resolve(true);
+          setTimeout(() => resolve(true), 2500);
+        });
+      } else if (atype === 'audio') {
+        const tempAudio = document.createElement('audio');
+        tempAudio.src = objectUrl;
+        await new Promise((resolve) => {
+          tempAudio.onloadedmetadata = () => {
+            if (tempAudio.duration && !isNaN(tempAudio.duration) && isFinite(tempAudio.duration)) {
+              measuredDuration = Math.round(tempAudio.duration * 10) / 10;
+            }
+            resolve(true);
+          };
+          tempAudio.onerror = () => resolve(true);
+          setTimeout(() => resolve(true), 2500);
+        });
+      }
+    } catch (err) {
+      console.warn("Client duration probe note:", err);
+    }
+
+    const localAsset: Asset = {
+      id: `ast_local_${Date.now()}`,
+      name: file.name.replace(/\.[^/.]+$/, "").replace(/[_]/g, ' '),
+      url: objectUrl,
+      type: atype as 'video' | 'audio' | 'image',
+      duration: measuredDuration,
+      tags: ['user_upload', 'local_browser'],
+    };
+
+    const currentProj = useEditorStore.getState().project;
+    if (currentProj) {
+      const updatedAssets = [localAsset, ...(currentProj.assets || [])];
+      useEditorStore.setState({
+        project: { ...currentProj, assets: updatedAssets }
+      });
+    }
+
+    // Auto-insert newly uploaded video/image into timeline if timeline has only placeholder
+    if (atype === 'video' || atype === 'image') {
+      const playheadTime = useEditorStore.getState().project?.playhead || 0;
+      await useEditorStore.getState().addClipToTrack(
+        'trk_v1',
+        localAsset.id,
+        playheadTime,
+        measuredDuration,
+        localAsset.url,
+        localAsset.name,
+        localAsset.type
+      );
+      setAddedAssetId(localAsset.id);
+      setTimeout(() => setAddedAssetId(null), 2500);
+    } else if (atype === 'audio') {
+      const playheadTime = useEditorStore.getState().project?.playhead || 0;
+      await useEditorStore.getState().addClipToTrack(
+        'trk_a1',
+        localAsset.id,
+        playheadTime,
+        measuredDuration,
+        localAsset.url,
+        localAsset.name,
+        localAsset.type
+      );
+      setAddedAssetId(localAsset.id);
+      setTimeout(() => setAddedAssetId(null), 2500);
+    }
+
+    // Send to server in background if connected
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
       const res = await apiFetch('/api/media/upload', {
         method: 'POST',
         body: formData
@@ -43,78 +129,55 @@ export const MediaPanel: React.FC = () => {
         }
       }
     } catch (err) {
-      console.error('Upload failed:', err);
+      // Offline fallback is active
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleInsertClip = async (asset: Asset, trackId: string) => {
-    const playheadTime = project?.playhead || 0;
-    try {
-      const res = await apiFetch('/api/timeline/add_clip', {
-        method: 'POST',
-        body: JSON.stringify({
-          trackId,
-          assetId: asset.id,
-          startTime: playheadTime,
-          duration: asset.duration || 5.0,
-          assetUrl: asset.url,
-          assetName: asset.name,
-          assetType: asset.type
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        useEditorStore.setState({ project: data.timeline, selectedClipId: data.clip?.id });
-        setAddedAssetId(asset.id);
-        setTimeout(() => setAddedAssetId(null), 2000);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    const playheadTime = useEditorStore.getState().project?.playhead || 0;
+    await useEditorStore.getState().addClipToTrack(
+      trackId,
+      asset.id,
+      playheadTime,
+      asset.duration || 5.0,
+      asset.url,
+      asset.name,
+      asset.type
+    );
+    setAddedAssetId(asset.id);
+    setTimeout(() => setAddedAssetId(null), 2000);
   };
 
   const handleSetMain = async (asset: Asset) => {
-    try {
-      const res = await apiFetch('/api/timeline/add_clip', {
-        method: 'POST',
-        body: JSON.stringify({
-          trackId: 'trk_v1',
-          assetId: asset.id,
-          startTime: 0.0,
-          duration: asset.duration || 10.0,
-          assetUrl: asset.url,
-          assetName: asset.name,
-          assetType: asset.type,
-          replaceTrack: true
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        useEditorStore.setState({ project: data.timeline, selectedClipId: data.clip?.id });
-        setPlayhead(0);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    await useEditorStore.getState().addClipToTrack(
+      'trk_v1',
+      asset.id,
+      0.0,
+      asset.duration || 10.0,
+      asset.url,
+      asset.name,
+      asset.type
+    );
+    useEditorStore.getState().setPlayhead(0);
   };
 
   const handleDeleteAsset = async (assetId: string) => {
+    const currentProj = useEditorStore.getState().project;
+    if (currentProj) {
+      const filtered = (currentProj.assets || []).filter(a => a.id !== assetId);
+      useEditorStore.setState({
+        project: { ...currentProj, assets: filtered }
+      });
+    }
+
     try {
-      const res = await apiFetch('/api/media/delete', {
+      await apiFetch('/api/media/delete', {
         method: 'POST',
         body: JSON.stringify({ assetId })
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.timeline) {
-          useEditorStore.setState({ project: data.timeline });
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) {}
   };
 
   const filteredAssets = assets.filter(a => {
