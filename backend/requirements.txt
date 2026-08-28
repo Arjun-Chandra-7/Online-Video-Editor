@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn>=0.31.0
+pydantic>=2.10.0
+websockets>=13.0
+mcp>=2.1.0
+numpy>=1.26.0
+python-multipart>=0.0.12
+imageio-ffmpeg>=0.5.1
+edge-tts>=7.0.0

@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# JavaScript
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# Runtime media and output
+backend/storage/assets/*
+!backend/storage/assets/.gitkeep
+backend/storage/exports/*
+!backend/storage/exports/.gitkeep
+backend/storage/projects/*
+!backend/storage/projects/.gitkeep
+test_audio.mp3
+
+# Private/source reference documents and generated memory
+Agentic_YouTube_Evolution_System_Main_Context.docx
+Viralist_AI_Video_Editor_Capability_Spec.pdf
+:memory:.ses
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+.idea/
+.vscode/
