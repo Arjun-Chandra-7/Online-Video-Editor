@@ -19,7 +19,8 @@ import {
   getAuthToken,
   setAuthToken,
   checkBackendHealth,
-  BackendHealth
+  BackendHealth,
+  LIVE_TUNNEL_URL
 } from '../utils/api';
 import { useEditorStore } from '../store/useEditorStore';
 
@@ -134,17 +135,17 @@ export const BackendConnectModal: React.FC<BackendConnectModalProps> = ({ isOpen
 
               <button
                 type="button"
-                onClick={() => handleSetPreset('https://editor.viralyst.internal')}
+                onClick={() => handleSetPreset(LIVE_TUNNEL_URL)}
                 className={`p-2.5 rounded-xl border text-left flex items-start space-x-2 transition ${
-                  urlInput.includes('viralyst')
-                    ? 'border-blue-500 bg-blue-950/30 text-blue-300'
+                  urlInput.includes('trycloudflare') || urlInput.includes('trainers-republican')
+                    ? 'border-emerald-500 bg-emerald-950/30 text-emerald-300'
                     : 'border-[#262A34] bg-[#181A22] hover:bg-[#1E212B] text-zinc-300'
                 }`}
               >
-                <Radio className="w-4 h-4 text-purple-400 mt-0.5 shrink-0" />
+                <Radio className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
                 <div>
-                  <div className="text-xs font-bold">Cloud Tunnel</div>
-                  <div className="text-[10px] text-zinc-400 font-mono">Cloudflare / Remote</div>
+                  <div className="text-xs font-bold">Active GPU Tunnel</div>
+                  <div className="text-[10px] text-emerald-400/80 font-mono truncate max-w-[140px]">Cloudflare (Online)</div>
                 </div>
               </button>
             </div>

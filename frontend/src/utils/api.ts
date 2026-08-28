@@ -3,10 +3,11 @@ import { TimelineProject } from '../types/timeline';
 // Storage keys
 const BACKEND_URL_KEY = 'viralist_backend_url';
 const AUTH_TOKEN_KEY = 'viralist_auth_token';
+export const LIVE_TUNNEL_URL = 'https://trainers-republican-jacob-retirement.trycloudflare.com';
 
-// Read query params from URL if present (e.g. ?backend=http://localhost:8080&token=v1...)
+// Read query params from URL if present (e.g. ?backend=https://...&token=v1...)
 function getInitialBackendUrl(): string {
-  if (typeof window === 'undefined') return '';
+  if (typeof window === 'undefined') return LIVE_TUNNEL_URL;
   const params = new URLSearchParams(window.location.search);
   const qBackend = params.get('backend') || params.get('tunnel') || params.get('server');
   if (qBackend) {
@@ -15,10 +16,22 @@ function getInitialBackendUrl(): string {
     return clean;
   }
   const stored = localStorage.getItem(BACKEND_URL_KEY);
-  if (stored !== null) return stored;
-  // Default to env or empty string for same-origin
+  if (stored) {
+    // If page is HTTPS and stored is plain HTTP (e.g. localhost), upgrade to live HTTPS tunnel to prevent Mixed Content blocking
+    if (window.location.protocol === 'https:' && stored.startsWith('http://localhost')) {
+      return LIVE_TUNNEL_URL;
+    }
+    return stored;
+  }
+
   const envUrl = ((import.meta as any).env?.VITE_API_URL || '');
-  return String(envUrl).trim().replace(/\/+$/, '');
+  if (envUrl) return String(envUrl).trim().replace(/\/+$/, '');
+
+  // If on HTTPS (e.g. Vercel), default to active HTTPS Cloudflare tunnel
+  if (window.location.protocol === 'https:') {
+    return LIVE_TUNNEL_URL;
+  }
+  return 'http://localhost:8080';
 }
 
 function getInitialAuthToken(): string {
