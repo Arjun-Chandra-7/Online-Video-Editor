@@ -5,7 +5,10 @@ import re
 from pathlib import Path
 from models.schema import (
     TimelineProject, Track, Clip, CaptionItem, CaptionStyle, ClipTransform,
-    ColorGrading, Asset, ClipKeyframe, TimelineMarker
+    ColorGrading, Asset, ClipKeyframe, TimelineMarker, EqualizerSettings,
+    DeEsserSettings, MasterAudioSettings, CropSettings, MaskSettings,
+    BlurRegion, ChromaKeySettings, StabilizationSettings, MotionTrackPoint,
+    TextLayer, CompoundClipData
 )
 from engine.transcriber import AudioTranscriber
 from config import ASSETS_DIR
@@ -35,13 +38,14 @@ class TimelineHistory:
         return self.redo_stack.pop()
 
 class TimelineEngine:
-    def __init__(self):
+    def __init__(self, init_captions: bool = True):
         self.history = TimelineHistory()
         self.state = self._init_clean_project()
-        try:
-            self.state.captions = self.generate_captions()
-        except Exception as e:
-            print(f"Initial caption generation error: {e}")
+        if init_captions:
+            try:
+                self.state.captions = self.generate_captions()
+            except Exception as e:
+                print(f"Initial caption generation error: {e}")
 
     def _init_clean_project(self) -> TimelineProject:
         tracks = [
@@ -873,3 +877,294 @@ class TimelineEngine:
             self.state = nxt
             return True
         return False
+
+    def set_clip_crop(
+        self,
+        clip_id: str,
+        top: float = 0.0,
+        bottom: float = 0.0,
+        left: float = 0.0,
+        right: float = 0.0,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        width: Optional[float] = None,
+        height: Optional[float] = None,
+    ) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        clip.crop = CropSettings(
+            top=max(0.0, float(top)),
+            bottom=max(0.0, float(bottom)),
+            left=max(0.0, float(left)),
+            right=max(0.0, float(right)),
+            x=x, y=y, width=width, height=height,
+        )
+        return True
+
+    def set_clip_mask(
+        self,
+        clip_id: str,
+        mask_type: str = "none",
+        x: float = 0.5,
+        y: float = 0.5,
+        width: float = 0.5,
+        height: float = 0.5,
+        feather: float = 0.0,
+        inverted: bool = False,
+    ) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        clip.mask = MaskSettings(
+            type=mask_type,  # type: ignore
+            x=float(x), y=float(y),
+            width=max(0.01, float(width)), height=max(0.01, float(height)),
+            feather=max(0.0, float(feather)), inverted=bool(inverted),
+        )
+        return True
+
+    def add_blur_region(
+        self,
+        clip_id: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        radius: float = 15.0,
+        blur_type: str = "mosaic",
+        start_time: float = 0.0,
+        end_time: float = 0.0,
+    ) -> Optional[BlurRegion]:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return None
+        dur = clip.timelineEnd - clip.timelineStart
+        region = BlurRegion(
+            id=f"blur_{uuid.uuid4().hex[:8]}",
+            x=float(x), y=float(y),
+            width=max(0.01, float(width)), height=max(0.01, float(height)),
+            radius=max(1.0, float(radius)),
+            type=blur_type if blur_type in {"gaussian", "mosaic", "pixelate"} else "mosaic",
+            startTime=max(0.0, float(start_time)),
+            endTime=float(end_time) if end_time > 0 else dur,
+        )
+        clip.blurRegions.append(region)
+        return region
+
+    def delete_blur_region(self, clip_id: str, region_id: str) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        before = len(clip.blurRegions)
+        clip.blurRegions = [r for r in clip.blurRegions if r.id != region_id]
+        return len(clip.blurRegions) < before
+
+    def set_clip_chroma_key(
+        self,
+        clip_id: str,
+        enabled: bool = True,
+        color: str = "#00FF00",
+        similarity: float = 0.25,
+        blend: float = 0.1,
+        spill: float = 0.1,
+    ) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        clip.chromaKey = ChromaKeySettings(
+            enabled=bool(enabled),
+            color=str(color),
+            similarity=max(0.01, min(1.0, float(similarity))),
+            blend=max(0.0, min(1.0, float(blend))),
+            spill=max(0.0, min(1.0, float(spill))),
+        )
+        return True
+
+    def set_clip_stabilization(
+        self,
+        clip_id: str,
+        enabled: bool = True,
+        shakiness: int = 5,
+        accuracy: int = 15,
+        step_size: int = 6,
+        smoothing: int = 10,
+    ) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        clip.stabilization = StabilizationSettings(
+            enabled=bool(enabled),
+            shakiness=max(1, min(10, int(shakiness))),
+            accuracy=max(1, min(15, int(accuracy))),
+            stepSize=max(1, min(32, int(step_size))),
+            smoothing=max(1, min(100, int(smoothing))),
+        )
+        return True
+
+    def add_motion_track_point(
+        self,
+        clip_id: str,
+        time_pos: float,
+        x: float,
+        y: float,
+        scale: float = 1.0,
+        rotation: float = 0.0,
+    ) -> Optional[MotionTrackPoint]:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return None
+        point = MotionTrackPoint(
+            time=round(float(time_pos), 3),
+            x=round(float(x), 3),
+            y=round(float(y), 3),
+            scale=round(float(scale), 3),
+            rotation=round(float(rotation), 2),
+        )
+        clip.motionTrack.append(point)
+        clip.motionTrack.sort(key=lambda p: p.time)
+        return point
+
+    def set_clip_text_layer(
+        self,
+        clip_id: str,
+        text: str,
+        font_size: int = 36,
+        font_family: str = "Montserrat",
+        color: str = "#FFFFFF",
+        bg_color: Optional[str] = None,
+        box_padding: int = 10,
+        animation: Optional[str] = "pop",
+        pos_x: float = 0.5,
+        pos_y: float = 0.8,
+    ) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        clip.textLayer = TextLayer(
+            text=str(text),
+            fontSize=max(8, int(font_size)),
+            fontFamily=str(font_family),
+            color=str(color),
+            bgColor=bg_color,
+            boxPadding=int(box_padding),
+            animation=animation or "none",
+            posX=float(pos_x),
+            posY=float(pos_y),
+        )
+        return True
+
+    def create_compound_clip(self, clip_ids: List[str], name: str = "Compound Clip") -> Optional[Clip]:
+        target_clips = [c for c in self.state.clips if c.id in clip_ids]
+        if not target_clips:
+            return None
+        min_start = min(c.timelineStart for c in target_clips)
+        max_end = max(c.timelineEnd for c in target_clips)
+        primary_track = target_clips[0].trackId
+        
+        # Build compound clip
+        compound = Clip(
+            id=f"compound_{uuid.uuid4().hex[:8]}",
+            trackId=primary_track,
+            assetId=f"ast_comp_{uuid.uuid4().hex[:6]}",
+            assetUrl="/api/assets/compound_clip.mp4",
+            name=name,
+            timelineStart=min_start,
+            timelineEnd=max_end,
+            sourceStart=0.0,
+            sourceEnd=max_end - min_start,
+            isCompoundClip=True,
+            compoundData=CompoundClipData(
+                internalClips=[c.model_dump() for c in target_clips],
+                internalTracks=[t.model_dump() for t in self.state.tracks if any(c.trackId == t.id for c in target_clips)],
+            ),
+        )
+        # Remove target clips from top level and insert compound
+        self.state.clips = [c for c in self.state.clips if c.id not in clip_ids]
+        self.state.clips.append(compound)
+        self._recalculate()
+        return compound
+
+    def create_adjustment_layer(
+        self,
+        track_id: str,
+        start_time: float,
+        duration: float,
+        name: str = "Adjustment Layer",
+        color_grading: Optional[Dict[str, Any]] = None,
+        effects: Optional[List[str]] = None,
+    ) -> Optional[Clip]:
+        track = next((t for t in self.state.tracks if t.id == track_id and t.type == "video"), None)
+        if not track:
+            return None
+        clip = Clip(
+            id=f"adj_{uuid.uuid4().hex[:8]}",
+            trackId=track_id,
+            assetId="asset_adjustment",
+            assetUrl="",
+            name=name,
+            timelineStart=float(start_time),
+            timelineEnd=float(start_time) + float(duration),
+            sourceStart=0.0,
+            sourceEnd=float(duration),
+            assetType="adjustment",
+            isAdjustmentLayer=True,
+            colorGrading=ColorGrading.model_validate(color_grading or {}),
+            effects=list(effects or []),
+        )
+        self.state.clips.append(clip)
+        self._recalculate()
+        return clip
+
+    def set_clip_eq_and_deesser(
+        self,
+        clip_id: str,
+        low_gain: Optional[float] = None,
+        mid_gain: Optional[float] = None,
+        high_gain: Optional[float] = None,
+        mid_freq: Optional[float] = None,
+        low_cut: Optional[float] = None,
+        de_esser_enabled: Optional[bool] = None,
+        de_esser_threshold: Optional[float] = None,
+        de_esser_freq: Optional[float] = None,
+        de_esser_amount: Optional[float] = None,
+    ) -> bool:
+        clip = next((c for c in self.state.clips if c.id == clip_id), None)
+        if not clip:
+            return False
+        if low_gain is not None: clip.eq.lowGain = float(low_gain)
+        if mid_gain is not None: clip.eq.midGain = float(mid_gain)
+        if high_gain is not None: clip.eq.highGain = float(high_gain)
+        if mid_freq is not None: clip.eq.midFreq = float(mid_freq)
+        if low_cut is not None: clip.eq.lowCut = float(low_cut)
+        if de_esser_enabled is not None: clip.deEsser.enabled = bool(de_esser_enabled)
+        if de_esser_threshold is not None: clip.deEsser.threshold = float(de_esser_threshold)
+        if de_esser_freq is not None: clip.deEsser.frequency = float(de_esser_freq)
+        if de_esser_amount is not None: clip.deEsser.amount = float(de_esser_amount)
+        return True
+
+    def set_master_audio_settings(
+        self,
+        target_lufs: Optional[float] = None,
+        true_peak: Optional[float] = None,
+        loudness_range: Optional[float] = None,
+        compressor_threshold: Optional[float] = None,
+        compressor_ratio: Optional[float] = None,
+        master_limiter: Optional[float] = None,
+        auto_ducking: Optional[bool] = None,
+        ducking_amount: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if target_lufs is not None: self.state.masterAudio.targetLufs = float(target_lufs)
+        if true_peak is not None: self.state.masterAudio.truePeak = float(true_peak)
+        if loudness_range is not None: self.state.masterAudio.loudnessRange = float(loudness_range)
+        if compressor_threshold is not None: self.state.masterAudio.compressorThreshold = float(compressor_threshold)
+        if compressor_ratio is not None: self.state.masterAudio.compressorRatio = float(compressor_ratio)
+        if master_limiter is not None: self.state.masterAudio.masterLimiter = float(master_limiter)
+        if auto_ducking is not None: self.state.autoDucking = bool(auto_ducking)
+        if ducking_amount is not None: self.state.duckingAmount = float(ducking_amount)
+        return {
+            "masterAudio": self.state.masterAudio.model_dump(),
+            "autoDucking": self.state.autoDucking,
+            "duckingAmount": self.state.duckingAmount,
+        }
+

@@ -21,8 +21,12 @@ APPROVED_MEDIA_ROOTS = tuple(dict.fromkeys([INBOX_DIR.resolve(), *_configured_me
 APPROVED_PROJECT_ROOTS = (PROJECTS_DIR.resolve(),)
 APPROVED_EXPORT_ROOTS = (EXPORTS_DIR.resolve(),)
 REQUIRE_AUTHORIZATION = os.environ.get("VIRALIST_REQUIRE_AUTHORIZATION", "false").lower() in {"1", "true", "yes"}
+REQUIRE_SIGNED_TOKENS = os.environ.get("VIRALIST_REQUIRE_SIGNED_TOKENS", "false").lower() in {"1", "true", "yes"}
+MANAGER_SIGNING_KEY = os.environ.get("VIRALIST_SIGNING_KEY", os.environ.get("VIRALIST_MANAGER_SECRET", "viralist-default-control-secret-key-32b-min"))
+PROXIES_DIR = CACHE_DIR / "proxies"
+CONFORMED_DIR = CACHE_DIR / "conformed"
 
-for d in [STORAGE_DIR, ASSETS_DIR, PROJECTS_DIR, EXPORTS_DIR, INBOX_DIR, RUNTIME_DIR, CACHE_DIR]:
+for d in [STORAGE_DIR, ASSETS_DIR, PROJECTS_DIR, EXPORTS_DIR, INBOX_DIR, RUNTIME_DIR, CACHE_DIR, PROXIES_DIR, CONFORMED_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 

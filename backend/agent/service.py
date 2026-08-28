@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from config import APPROVED_MEDIA_ROOTS, APPROVED_PROJECT_ROOTS, ASSETS_DIR, resolve_in_roots
 from agent.auth import authorize
@@ -16,6 +16,7 @@ from agent.control_store import ControlStore, sha256_file
 from agent.errors import EditorError, classify_exception
 from engine.history import HistoryManager
 from engine.intelligence import IntelligenceEngine
+from engine.proxy_manager import ProxyManager
 from engine.timeline import TimelineEngine
 from engine.transcriber import AudioTranscriber
 from models.schema import Asset, CaptionItem, CaptionStyle, TimelineProject, WordTimestamp
@@ -27,11 +28,11 @@ class AgentOperationError(EditorError):
 
 
 class AgentService:
-    """Atomic, inspectable operations over the live editor timeline."""
+    """Atomic, inspectable operations over the live editor timeline with transaction safety."""
 
-    VERSION = "3.0.0"
-    MCP_SCHEMA_VERSION = "3.0"
-    PROJECT_SCHEMA_VERSION = "1.0"
+    VERSION = "3.1.0"
+    MCP_SCHEMA_VERSION = "3.1"
+    PROJECT_SCHEMA_VERSION = "1.1"
 
     def __init__(self, engine: TimelineEngine):
         self.engine = engine
@@ -50,14 +51,17 @@ class AgentService:
     @property
     def operation_names(self) -> List[str]:
         return sorted({
-            "project.load_local", "project.set_playhead", "project.update_settings", "media.import_local", "media.remove",
-            "track.add", "track.remove", "track.reorder", "track.set_state", "clip.add", "clip.duplicate",
-            "clip.split", "clip.trim", "clip.move", "clip.ripple_delete",
-            "clip.set_speed", "clip.set_transform", "clip.set_color",
-            "clip.set_audio", "clip.set_transition", "clip.toggle_effect",
+            "project.load_local", "project.set_playhead", "project.update_settings", "project.set_master_audio",
+            "media.import_local", "media.remove", "media.generate_proxy", "media.cache_prune",
+            "track.add", "track.remove", "track.reorder", "track.set_state",
+            "clip.add", "clip.duplicate", "clip.split", "clip.trim", "clip.move", "clip.ripple_delete",
+            "clip.set_speed", "clip.set_transform", "clip.set_color", "clip.set_audio", "clip.set_transition",
+            "clip.toggle_effect", "clip.set_crop", "clip.set_mask", "clip.add_blur_region", "clip.delete_blur_region",
+            "clip.set_chroma_key", "clip.set_stabilization", "clip.add_motion_track_point", "clip.set_text_layer",
+            "clip.create_compound", "clip.create_adjustment_layer", "clip.set_eq_deesser",
             "keyframe.upsert", "keyframe.delete", "marker.add", "marker.delete",
-            "caption.create", "caption.delete", "caption.update", "transcript.delete_range", "ai.remove_silence",
-            "ai.remove_fillers", "ai.punch_in_zooms", "ai.generate_captions",
+            "caption.create", "caption.delete", "caption.update", "transcript.delete_range",
+            "ai.remove_silence", "ai.remove_fillers", "ai.punch_in_zooms", "ai.generate_captions",
             "history.undo", "history.redo",
         })
 
@@ -67,11 +71,11 @@ class AgentService:
             "version": self.VERSION,
             "mcpSchemaVersion": self.MCP_SCHEMA_VERSION,
             "projectSchemaVersion": self.PROJECT_SCHEMA_VERSION,
-            "compatibleMcpSchemaVersions": ["3.0"],
-            "compatibleProjectSchemaVersions": ["1.0"],
+            "compatibleMcpSchemaVersions": ["3.0", "3.1"],
+            "compatibleProjectSchemaVersions": ["1.0", "1.1"],
             "revision": self.revision,
             "operations": self.operation_names,
-            "queries": ["timeline", "media", "transcript", "history", "snapshots", "pacing", "hooks", "energy"],
+            "queries": ["timeline", "media", "transcript", "history", "snapshots", "pacing", "hooks", "energy", "cache_stats", "master_audio"],
             "features": {
                 "atomicBatch": True,
                 "dryRun": True,
@@ -86,8 +90,13 @@ class AgentService:
                 "persistentRecovery": True,
                 "structuredErrors": True,
                 "authorizationContext": True,
+                "signedAuthorization": True,
                 "asyncJobs": True,
                 "assetProvenance": True,
+                "p2Vocabulary": True,
+                "productionAudio": True,
+                "proxyCacheManagement": True,
+                "masteringLufs": True,
             },
             "enums": {
                 "trackTypes": ["video", "audio"],
@@ -104,12 +113,14 @@ class AgentService:
                     "cinematic_709", "teal_orange", "cyber_neon", "vintage_80s", "golden_sunset",
                     "moody_forest", "noir_monolith", "clean_commercial",
                 ],
-                "keyframeProperties": ["scale", "posX", "posY", "rotation", "opacity", "volume"],
+                "keyframeProperties": ["scale", "posX", "posY", "rotation", "opacity", "volume", "pan", "lowGain", "highGain"],
                 "easings": ["linear", "ease-in", "ease-out", "ease-in-out"],
                 "captionLayouts": [
                     "hero_depth_action", "split_shoulder", "stacked_list", "lower_third_clean",
                     "contrast_statement",
                 ],
+                "maskTypes": ["none", "rectangle", "ellipse", "circle", "path"],
+                "blurTypes": ["gaussian", "mosaic", "pixelate"],
                 "exportQualities": ["draft", "standard", "high", "maximum"],
                 "captionModes": ["burn_in", "sidecar", "none"],
             },
@@ -121,11 +132,6 @@ class AgentService:
                 "opacity": {"min": 0.0, "max": 1.0},
                 "approvedMediaRoots": [str(root) for root in APPROVED_MEDIA_ROOTS],
             },
-            "batchExample": [
-                {"operation": "clip.split", "parameters": {"clipId": "<from project_inspect>", "time": 3.5}},
-                {"operation": "clip.set_transform", "parameters": {"clipId": "<returned split ID>", "scale": 1.22}},
-                {"operation": "marker.add", "parameters": {"time": 0, "label": "Hook", "category": "hook"}},
-            ],
             "recommendedWorkflow": [
                 "project_inspect", "project_create_snapshot", "edit tools with dry_run=true",
                 "edit_batch", "project_inspect", "ai_pacing_audit", "project_export",
@@ -186,6 +192,10 @@ class AgentService:
             return {"hooks": IntelligenceEngine.generate_viral_hooks(state)}
         if query == "energy":
             return {"curve": IntelligenceEngine.analyze_energy_curve(state), "evidenceClass": "EDITOR_HEURISTIC", "independentAudit": False, "algorithmVersion": "energy-heuristic-1"}
+        if query == "cache_stats":
+            return ProxyManager.cache_stats()
+        if query == "master_audio":
+            return state.masterAudio.model_dump()
         if query == "asset_provenance":
             asset_id = str(parameters.get("assetId", ""))
             return {"assetId": asset_id, "provenance": self.store.asset_provenance(asset_id)}
@@ -223,7 +233,64 @@ class AgentService:
                 self._log("snapshot.restore", {"snapshotId": snapshot_id}, diff)
             return {"success": True, "dryRun": dry_run, "snapshot": entry["meta"], "diff": diff, "revision": self.revision}
 
-    def execute(self, operation: str, parameters: Optional[Dict[str, Any]] = None, dry_run: bool = False, operation_id: Optional[str] = None, expected_revision: Optional[int] = None, authorization: Optional[Dict[str, Any]] = None, rationale: str = "") -> Dict[str, Any]:
+    def transaction(
+        self,
+        operation_name: str,
+        mutator: Callable[[], Any],
+        rationale: str = "",
+        authorization: Optional[Union[str, Dict[str, Any]]] = None,
+        expected_revision: Optional[int] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Provides unified cross-request locking, atomic revisioning, durable recovery, and audit tracking for UI mutation routes."""
+        with self.lock:
+            context = authorize(operation_name, authorization)
+            if self.store.kill_switch():
+                raise AgentOperationError("The global kill switch is active; mutations are blocked.", "KILL_SWITCH_ACTIVE", http_status=423)
+            if expected_revision is not None and int(expected_revision) != self.revision:
+                raise AgentOperationError(
+                    f"Expected revision {expected_revision}, but project is revision {self.revision}.",
+                    "REVISION_CONFLICT",
+                    retryable=True,
+                    details={"expectedRevision": expected_revision, "actualRevision": self.revision},
+                    http_status=409,
+                )
+            before = copy.deepcopy(self.engine.state)
+            revision_before = self.revision
+            started = time.monotonic()
+            try:
+                result = mutator()
+                diff = HistoryManager.compute_diff(before, self.engine.state)
+                self.revision += 1
+                self.store.set_revision(self.revision)
+                self.store.save_recovery(self.engine.state, self.revision)
+                self._log(operation_name, parameters or {}, diff, f"op_ui_{uuid.uuid4().hex[:8]}", context, rationale, started)
+                return {
+                    "success": True,
+                    "operation": operation_name,
+                    "result": result,
+                    "diff": diff,
+                    "revision": self.revision,
+                }
+            except Exception as exc:
+                self.engine.state = before
+                self.revision = revision_before
+                self.store.set_revision(revision_before)
+                self.store.save_recovery(before, revision_before)
+                error = classify_exception(exc)
+                self._log(operation_name, parameters or {}, {}, f"op_ui_err_{uuid.uuid4().hex[:8]}", context, rationale, started, error)
+                raise error from exc
+
+    def execute(
+        self,
+        operation: str,
+        parameters: Optional[Dict[str, Any]] = None,
+        dry_run: bool = False,
+        operation_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        authorization: Optional[Union[str, Dict[str, Any]]] = None,
+        rationale: str = "",
+    ) -> Dict[str, Any]:
         parameters = parameters or {}
         with self.lock:
             operation_id = operation_id or f"op_{uuid.uuid4().hex}"
@@ -258,8 +325,6 @@ class AgentService:
                     self.engine.history.redo_stack = redo_before
                     self._cleanup_imports(files_before)
                 else:
-                    # Every agent command is exactly one undo step, even when the
-                    # underlying editor method pushes zero or several states.
                     if operation not in {"history.undo", "history.redo"}:
                         self.engine.history.undo_stack = undo_before
                         self.engine.history.redo_stack = redo_before
@@ -279,9 +344,6 @@ class AgentService:
                 self._cleanup_imports(files_before)
                 error = classify_exception(exc)
                 if not dry_run:
-                    # A failure after a persistence attempt must leave both the
-                    # in-memory timeline and its durable checkpoint at the same
-                    # known-good revision.
                     self.revision = revision_before
                     self.store.set_revision(revision_before)
                     self.store.finish_operation(operation_id, {"success": False, "operationId": operation_id, "error": error.payload()["error"]}, "failed")
@@ -289,7 +351,15 @@ class AgentService:
                     self._log(operation, parameters, {}, operation_id, context, rationale, started, error)
                 raise error from exc
 
-    def batch(self, operations: List[Dict[str, Any]], dry_run: bool = True, operation_id: Optional[str] = None, expected_revision: Optional[int] = None, authorization: Optional[Dict[str, Any]] = None, rationale: str = "") -> Dict[str, Any]:
+    def batch(
+        self,
+        operations: List[Dict[str, Any]],
+        dry_run: bool = True,
+        operation_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        authorization: Optional[Union[str, Dict[str, Any]]] = None,
+        rationale: str = "",
+    ) -> Dict[str, Any]:
         if not operations:
             raise AgentOperationError("Batch requires at least one operation")
         if len(operations) > 100:
@@ -332,7 +402,6 @@ class AgentService:
                     self.engine.history.redo_stack = redo_before
                     self._cleanup_imports(files_before)
                 else:
-                    # Collapse the internal edit pushes into a single reversible transaction.
                     self.engine.history.undo_stack = undo_before
                     self.engine.history.redo_stack = redo_before
                     self.engine.history.push(before, f"Agent batch ({len(operations)} operations)")
@@ -384,6 +453,8 @@ class AgentService:
                 raise AgentOperationError(f"Invalid Viralist project JSON: {exc}") from exc
             e.state = loaded
             return {"path": str(source), "projectId": loaded.id, "title": loaded.title}
+        if operation == "project.set_master_audio":
+            return e.set_master_audio_settings(p.get("targetLufs"), p.get("truePeak"), p.get("loudnessRange"), p.get("compressorThreshold"), p.get("compressorRatio"), p.get("masterLimiter"), p.get("autoDucking"), p.get("duckingAmount"))
         if operation == "media.import_local":
             try: source = resolve_in_roots(str(self._require(p.get("path"), "path")), APPROVED_MEDIA_ROOTS, "Media path")
             except PermissionError as exc: raise AgentOperationError(str(exc), "PATH_NOT_ALLOWED", http_status=403) from exc
@@ -393,8 +464,21 @@ class AgentService:
             safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", source.name)
             target = ASSETS_DIR / f"agent_{int(time.time())}_{safe}"
             shutil.copy2(source, target)
-            duration = float(p.get("imageDuration", 5.0) if media_type == "image" else AudioTranscriber.get_media_duration(target))
-            asset = Asset(id=f"ast_{uuid.uuid4().hex[:10]}", name=p.get("name") or source.stem, url=f"/api/assets/{target.name}", type=media_type, duration=duration, tags=list(p.get("tags") or ["agent_import"]))
+            probe = ProxyManager.probe_media(target) if media_type == "video" else {}
+            duration = float(p.get("imageDuration", 5.0) if media_type == "image" else probe.get("duration") or AudioTranscriber.get_media_duration(target))
+            asset = Asset(
+                id=f"ast_{uuid.uuid4().hex[:10]}",
+                name=p.get("name") or source.stem,
+                url=f"/api/assets/{target.name}",
+                type=media_type,
+                duration=duration,
+                tags=list(p.get("tags") or ["agent_import"]),
+                is4K=probe.get("is4K", False),
+                isVfr=probe.get("isVfr", False),
+                width=probe.get("width"),
+                height=probe.get("height"),
+                audioChannels=probe.get("totalAudioChannels", 2),
+            )
             provenance = {"source": str(source), "sourceType": p.get("sourceType", "local_upload"), "creator": p.get("creator"), "generator": p.get("generator"), "modelVersion": p.get("modelVersion"), "generationPrompt": p.get("generationPrompt"), "license": p.get("license", "unknown"), "permissionReference": p.get("permissionReference"), "usageRestrictions": list(p.get("usageRestrictions") or []), "checksumSha256": sha256_file(target), "importedAt": time.time()}
             self.store.record_asset(asset.id, provenance)
             e.state.assets.insert(0, asset); return {**asset.model_dump(), "provenance": provenance}
@@ -403,6 +487,16 @@ class AgentService:
             if any(c.assetId == asset_id for c in e.state.clips): raise AgentOperationError("Asset is in use on the timeline")
             before_count = len(e.state.assets); e.state.assets = [a for a in e.state.assets if a.id != asset_id]
             self._ok(len(e.state.assets) < before_count, "Asset not found"); return {"assetId": asset_id}
+        if operation == "media.generate_proxy":
+            asset_id = self._require(p.get("assetId"), "assetId")
+            asset = next((a for a in e.state.assets if a.id == asset_id), None)
+            self._ok(asset, "Asset not found", "ASSET_NOT_FOUND")
+            fpath = ASSETS_DIR / Path(asset.url.split("?")[0]).name
+            proxy_path = ProxyManager.generate_proxy(fpath, int(p.get("maxDimension", 1280)), int(p.get("targetFps", 30)))
+            asset.proxyUrl = f"/api/assets/proxies/{proxy_path.name}"
+            return {"assetId": asset_id, "proxyUrl": asset.proxyUrl, "proxyPath": str(proxy_path)}
+        if operation == "media.cache_prune":
+            return ProxyManager.prune_cache(int(p.get("maxSizeBytes", 2 * 1024 * 1024 * 1024)), int(p.get("maxAgeSeconds", 7 * 86400)))
         if operation == "track.add":
             return e.add_track(p.get("type", "video"), p.get("name")).model_dump()
         if operation == "track.remove":
@@ -455,6 +549,28 @@ class AgentService:
             self._ok(e.set_clip_color_grading(self._require(p.get("clipId"), "clipId"), p.get("exposure"), p.get("contrast"), p.get("temperature"), p.get("tint"), p.get("saturation"), p.get("vignette"), p.get("lut"), p.get("curves")), "Color update failed"); return {"clipId": p["clipId"]}
         if operation == "clip.set_audio":
             self._ok(e.set_clip_audio(self._require(p.get("clipId"), "clipId"), p.get("volume"), p.get("pan"), p.get("fadeIn"), p.get("fadeOut"), p.get("audioEnhance")), "Audio update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.set_eq_deesser":
+            self._ok(e.set_clip_eq_and_deesser(self._require(p.get("clipId"), "clipId"), p.get("lowGain"), p.get("midGain"), p.get("highGain"), p.get("midFreq"), p.get("lowCut"), p.get("deEsserEnabled"), p.get("deEsserThreshold"), p.get("deEsserFreq"), p.get("deEsserAmount")), "EQ/De-Esser update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.set_crop":
+            self._ok(e.set_clip_crop(self._require(p.get("clipId"), "clipId"), p.get("top", 0), p.get("bottom", 0), p.get("left", 0), p.get("right", 0), p.get("x"), p.get("y"), p.get("width"), p.get("height")), "Crop update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.set_mask":
+            self._ok(e.set_clip_mask(self._require(p.get("clipId"), "clipId"), p.get("type", "none"), p.get("x", 0.5), p.get("y", 0.5), p.get("width", 0.5), p.get("height", 0.5), p.get("feather", 0), bool(p.get("inverted", False))), "Mask update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.add_blur_region":
+            r = e.add_blur_region(self._require(p.get("clipId"), "clipId"), float(self._require(p.get("x"), "x")), float(self._require(p.get("y"), "y")), float(self._require(p.get("width"), "width")), float(self._require(p.get("height"), "height")), float(p.get("radius", 15.0)), p.get("type", "mosaic"), float(p.get("startTime", 0.0)), float(p.get("endTime", 0.0))); self._ok(r, "Add blur region failed"); return r.model_dump()
+        if operation == "clip.delete_blur_region":
+            self._ok(e.delete_blur_region(self._require(p.get("clipId"), "clipId"), self._require(p.get("regionId"), "regionId")), "Blur region not found"); return {"regionId": p["regionId"]}
+        if operation == "clip.set_chroma_key":
+            self._ok(e.set_clip_chroma_key(self._require(p.get("clipId"), "clipId"), bool(p.get("enabled", True)), p.get("color", "#00FF00"), float(p.get("similarity", 0.25)), float(p.get("blend", 0.1)), float(p.get("spill", 0.1))), "Chroma key update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.set_stabilization":
+            self._ok(e.set_clip_stabilization(self._require(p.get("clipId"), "clipId"), bool(p.get("enabled", True)), int(p.get("shakiness", 5)), int(p.get("accuracy", 15)), int(p.get("stepSize", 6)), int(p.get("smoothing", 10))), "Stabilization update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.add_motion_track_point":
+            pt = e.add_motion_track_point(self._require(p.get("clipId"), "clipId"), float(self._require(p.get("time"), "time")), float(self._require(p.get("x"), "x")), float(self._require(p.get("y"), "y")), float(p.get("scale", 1.0)), float(p.get("rotation", 0.0))); self._ok(pt, "Add track point failed"); return pt.model_dump()
+        if operation == "clip.set_text_layer":
+            self._ok(e.set_clip_text_layer(self._require(p.get("clipId"), "clipId"), str(self._require(p.get("text"), "text")), int(p.get("fontSize", 36)), p.get("fontFamily", "Montserrat"), p.get("color", "#FFFFFF"), p.get("bgColor"), int(p.get("boxPadding", 10)), p.get("animation", "pop"), float(p.get("posX", 0.5)), float(p.get("posY", 0.8))), "Text layer update failed"); return {"clipId": p["clipId"]}
+        if operation == "clip.create_compound":
+            comp = e.create_compound_clip(list(self._require(p.get("clipIds"), "clipIds")), p.get("name", "Compound Clip")); self._ok(comp, "Create compound clip failed"); return comp.model_dump()
+        if operation == "clip.create_adjustment_layer":
+            adj = e.create_adjustment_layer(self._require(p.get("trackId"), "trackId"), float(self._require(p.get("startTime"), "startTime")), float(self._require(p.get("duration"), "duration")), p.get("name", "Adjustment Layer"), p.get("colorGrading"), p.get("effects")); self._ok(adj, "Create adjustment layer failed"); return adj.model_dump()
         if operation == "clip.set_transition":
             self._ok(e.set_clip_transition(self._require(p.get("clipId"), "clipId"), p.get("transitionIn"), p.get("transitionOut"), p.get("duration")), "Transition update failed"); return {"clipId": p["clipId"]}
         if operation == "clip.toggle_effect":
@@ -506,7 +622,17 @@ class AgentService:
             if self.engine.delete_transcript_range(start, end): removed.append(word)
         return {"removedCount": len(removed), "removedWords": list(reversed(removed))}
 
-    def _log(self, operation: str, parameters: Dict[str, Any], diff: Dict[str, Any], operation_id: str = "", context: Optional[Dict[str, Any]] = None, rationale: str = "", started: Optional[float] = None, error: Optional[EditorError] = None) -> None:
+    def _log(
+        self,
+        operation: str,
+        parameters: Dict[str, Any],
+        diff: Dict[str, Any],
+        operation_id: str = "",
+        context: Optional[Dict[str, Any]] = None,
+        rationale: str = "",
+        started: Optional[float] = None,
+        error: Optional[EditorError] = None,
+    ) -> None:
         """Persist a compact event that organizational memory can consume directly."""
         context = context or {}
         timestamp = time.time()

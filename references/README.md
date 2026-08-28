@@ -8,14 +8,17 @@ The MCP is the product interface—not a demo wrapper. It and the web UI mutate 
 
 - Discover capabilities, accepted enums, limits, and current project revision.
 - Inspect tracks, clips, assets, captions, word timestamps, markers, keyframes, effects, transforms, grading, and audio state.
-- Import local video/audio/images; place, split, trim, move, duplicate, speed-change, reverse, freeze, or ripple-delete clips.
+- Import local video/audio/images; generate 720p/1080p CFR editing proxies for 4K/VFR media; prune cache automatically.
 - Add/remove/reorder/mute/lock/hide tracks.
-- Apply transforms, keyframes, 25 creator effects, LUTs, transitions, gain, pan, fades, and speech enhancement.
+- Apply transforms, keyframes, 25 creator effects, LUTs, transitions, gain, pan, fades, parametric EQ, de-essers, and speech-aware ducking.
+- Perform advanced P2 edits: crop, masks (rectangular/elliptical/path), blur/mosaic regions, green screen chroma keying, stabilization, text layers, compound clips, and adjustment layers.
 - Create/edit/delete styled captions; search transcripts; return SRT; remove silences/filler words using timestamps.
-- Generate neural narration and synchronized kinetic captions using 11 voice presets.
+- Run long-running tasks (transcription, kinetic captions, neural voiceovers, deep audits, exports) as durable async background jobs.
+- Authenticate using cryptographic Manager-Signed tokens (HMAC-SHA256) with permission scoping and cross-request transactional safety.
 - Create snapshots, run preview-only edits, commit atomic batches, inspect semantic diffs, and undo/redo.
 - Audit pacing, hooks, retention risks, caption coverage, and energy.
-- Save portable project JSON and render MP4 with NVIDIA, Intel Quick Sync, or CPU encoding.
+- Monitor real-time GPU/VRAM utilization, system RAM, disk storage, and tunnel status via observability endpoints.
+- Save portable project JSON and render MP4 with NVIDIA, Intel Quick Sync, or CPU encoding, verified by automated multi-point technical QA.
 
 The complete operating contract is in [SKILL.md](SKILL.md). Agent tool and workflow details are in [references/TOOL_REFERENCE.md](references/TOOL_REFERENCE.md) and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 

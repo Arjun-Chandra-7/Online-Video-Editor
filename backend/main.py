@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from api.routes import router as api_router
 from api.ws import ws_manager
-from config import EXPORTS_DIR, ASSETS_DIR, HARDWARE_CONFIG, REQUIRE_AUTHORIZATION
+from config import EXPORTS_DIR, ASSETS_DIR, HARDWARE_CONFIG, REQUIRE_AUTHORIZATION, PROXIES_DIR, CONFORMED_DIR
 from agent.auth import authorize
 from agent.errors import classify_exception
 import logging
@@ -36,25 +36,31 @@ async def enforce_legacy_mutation_authorization(request, call_next):
     """Close the legacy UI/API bypass when production authorization is enabled.
 
     Agent endpoints validate their body context in AgentService. Legacy endpoints
-    use the `X-Viralist-Authorization` JSON header so a browser/service cannot
-    mutate a guarded runtime merely by reaching an old route.
+    use the `X-Viralist-Authorization` header (signed token or JSON) so an unauthenticated
+    browser/service cannot mutate a guarded runtime.
     """
     writes = {"POST", "PUT", "PATCH", "DELETE"}
     if REQUIRE_AUTHORIZATION and request.method in writes and request.url.path.startswith("/api/") and not request.url.path.startswith("/api/agent/"):
         try:
-            raw = request.headers.get("X-Viralist-Authorization", "")
-            context = json.loads(raw) if raw else None
-            authorize("timeline.write", context)
+            raw = request.headers.get("X-Viralist-Authorization") or request.headers.get("Authorization", "")
+            authorize("timeline.write", raw)
         except Exception as exc:
             error = classify_exception(exc)
             return JSONResponse(status_code=error.http_status, content=error.payload())
     return await call_next(request)
 
-# Custom asset streaming route with robust headers
+# Custom asset streaming route with robust headers (supporting original assets, proxies, and conformed media)
 @app.get("/api/assets/{filename:path}")
 async def serve_asset_file(filename: str):
-    file_path = ASSETS_DIR / filename
-    if not file_path.exists():
+    clean = filename.lstrip("/")
+    if clean.startswith("proxies/"):
+        file_path = PROXIES_DIR / clean.replace("proxies/", "")
+    elif clean.startswith("conformed/"):
+        file_path = CONFORMED_DIR / clean.replace("conformed/", "")
+    else:
+        file_path = ASSETS_DIR / clean
+    
+    if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Asset not found")
 
     media_type = None
@@ -64,6 +70,8 @@ async def serve_asset_file(filename: str):
         media_type = "audio/wav"
     elif filename.endswith(".mp4"):
         media_type = "video/mp4"
+    elif filename.endswith((".png", ".jpg", ".jpeg", ".webp")):
+        media_type = "image/png" if filename.endswith(".png") else "image/jpeg"
 
     return FileResponse(
         path=file_path,

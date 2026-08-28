@@ -104,3 +104,29 @@ class JobManager:
         with self.store._connect() as conn:
             rows = conn.execute("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status").fetchall()
         return {row["status"]: row["count"] for row in rows}
+
+    def list_jobs(self, limit: int = 50, job_type: Optional[str] = None) -> list[Dict[str, Any]]:
+        with self.store._connect() as conn:
+            if job_type:
+                rows = conn.execute("SELECT * FROM jobs WHERE type=? ORDER BY created_at DESC LIMIT ?", (job_type, max(1, min(limit, 200)))).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),)).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            results.append({
+                "jobId": item["job_id"],
+                "operationId": item["operation_id"],
+                "type": item["type"],
+                "status": item["status"],
+                "progress": item["progress"],
+                "payload": json.loads(item["payload_json"]) if item["payload_json"] else {},
+                "result": json.loads(item["result_json"]) if item["result_json"] else None,
+                "error": json.loads(item["error_json"]) if item["error_json"] else None,
+                "logs": json.loads(item["logs_json"]) if item["logs_json"] else [],
+                "createdAt": item["created_at"],
+                "startedAt": item["started_at"],
+                "finishedAt": item["finished_at"],
+            })
+        return results
+
