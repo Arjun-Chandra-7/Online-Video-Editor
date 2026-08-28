@@ -115,6 +115,23 @@ The MCP can attach to an already-running API using `VIRALIST_API_URL`. Otherwise
 | `VIRALIST_API_URL` | `http://127.0.0.1:8080/api` | Attach MCP to a specific live editor API. |
 | `VIRALIST_AUTOSTART_WEB` | `true` | Auto-start the local web/API process from MCP. |
 | `PORT` | `8080` | Port used by manual web startup. |
+| `VIRALIST_MEDIA_ROOTS` | `backend/storage/inbox` | OS-path-separated approved import roots; no arbitrary filesystem access. |
+| `VIRALIST_REQUIRE_AUTHORIZATION` | `false` | Require a Manager authorization context for every mutation. |
+| `VIRALIST_AUTHORIZATION_JSON` | unset | JSON authorization context forwarded by the MCP process. Keep it in an environment/secret manager, never Git. |
+
+## Production hardening
+
+The live runtime keeps a SQLite control plane and atomic project recovery checkpoint under `backend/storage/runtime` (both ignored by Git). Mutations are idempotent by `operationId`, support optimistic revision locking with `expectedRevision`, create durable audit events, and restore a known-good checkpoint after a process death. Exports are asynchronous jobs with progress, logs, cancellation, software-render fallback, disk preflight, cleanup of partial files, and technical output QA.
+
+For a guarded multi-agent deployment, set `VIRALIST_REQUIRE_AUTHORIZATION=true` and inject a Manager-issued `VIRALIST_AUTHORIZATION_JSON` such as:
+
+```json
+{"actorId":"channel-agent-12","allowedActions":["timeline.write"],"projectId":"optional-project-id","expiresAt":1893456000}
+```
+
+Use a real signing/verification layer at your Manager boundary before issuing this context. The editor independently enforces the granted actions; it does not trust an agent merely because it can reach the MCP.
+
+For service-managed Linux deployment, adapt `../deploy/viralist.service` and `../deploy/viralist-tunnel.service`, place secrets in `/etc/viralist/*.env` with restrictive permissions, then use `systemctl enable --now viralist`. The service unit restarts failures and confines writes to runtime storage; do not run a public tunnel without authentication in front of the API.
 
 ## Development and validation
 

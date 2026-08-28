@@ -23,7 +23,8 @@ SERVER_INSTRUCTIONS = (
     "Viralist is a stateful video editor. Inspect before editing. Create a snapshot before broad changes. "
     "Use dry_run=true for destructive or multi-step edits, review the semantic diff, then commit. IDs from "
     "project_inspect/media_search are stable targets. Prefer edit_batch for atomic multi-step changes. "
-    "Never invent clip, track, asset, caption, marker, or keyframe IDs. Export only after verification."
+    "Never invent clip, track, asset, caption, marker, or keyframe IDs. Every committed mutation needs a unique "
+    "operation_id and should include expected_revision from the immediately preceding inspection. Export only after verification."
 )
 
 mcp = MCPServer(
@@ -31,7 +32,7 @@ mcp = MCPServer(
     title="Viralist Agent Video Editor",
     description="Inspect, edit, caption, grade, mix, audit, and export a live non-linear video timeline.",
     instructions=SERVER_INSTRUCTIONS,
-    version="2.0.0",
+    version="3.0.0",
     website_url="https://github.com/Arjun-Chandra-7/Online-Video-Editor",
 )
 
@@ -48,7 +49,12 @@ class EditorConnectionError(RuntimeError):
 def _request(method: str, path: str, body: Optional[Dict[str, Any]] = None, timeout: int = 300) -> Dict[str, Any]:
     url = f"{API_URL}/{path.lstrip('/')}"
     data = None if body is None else json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    # A manager can inject a signed/validated context at process launch. It is
+    # forwarded to both the hardened agent API and legacy browser routes.
+    if os.environ.get("VIRALIST_AUTHORIZATION_JSON"):
+        headers["X-Viralist-Authorization"] = os.environ["VIRALIST_AUTHORIZATION_JSON"]
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -80,8 +86,19 @@ def _post(path: str, body: Optional[Dict[str, Any]] = None, timeout: int = 300) 
     return _request("POST", path, body or {}, timeout)
 
 
-def _execute(operation: str, parameters: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
-    return _post("agent/execute", {"operation": operation, "parameters": parameters, "dryRun": dry_run})
+def _authorization_context() -> Optional[Dict[str, Any]]:
+    raw = os.environ.get("VIRALIST_AUTHORIZATION_JSON", "")
+    try:
+        return json.loads(raw) if raw else None
+    except json.JSONDecodeError as exc:
+        raise EditorConnectionError("VIRALIST_AUTHORIZATION_JSON is not valid JSON") from exc
+
+
+def _execute(operation: str, parameters: Dict[str, Any], dry_run: bool, operation_id: str = "", expected_revision: Optional[int] = None, rationale: str = "") -> Dict[str, Any]:
+    body: Dict[str, Any] = {"operation": operation, "parameters": parameters, "dryRun": dry_run, "authorization": _authorization_context(), "rationale": rationale}
+    if operation_id: body["operationId"] = operation_id
+    if expected_revision is not None: body["expectedRevision"] = expected_revision
+    return _post("agent/execute", body)
 
 
 def _server_online() -> bool:
@@ -123,7 +140,10 @@ def _start_web_if_needed() -> None:
 
 @mcp.resource("viralist://skill", name="Viralist agent operating guide", mime_type="text/markdown")
 def skill_resource() -> str:
-    return (ROOT_DIR / "SKILL.md").read_text(encoding="utf-8")
+    path = ROOT_DIR / "SKILL.md"
+    if not path.exists():
+        path = ROOT_DIR / "references" / "SKILL.md"
+    return path.read_text(encoding="utf-8")
 
 
 @mcp.resource("viralist://project", name="Current live project", mime_type="application/json")
@@ -169,6 +189,30 @@ def project_history() -> Dict[str, Any]:
 
 
 @mcp.tool(annotations=READ, structured_output=True)
+def editor_events(limit: int = 100) -> Dict[str, Any]:
+    """Read durable machine-readable audit events for organizational memory."""
+    return _post("agent/query", {"query": "events", "parameters": {"limit": limit}})
+
+
+@mcp.tool(annotations=READ, structured_output=True)
+def media_provenance(asset_id: str) -> Dict[str, Any]:
+    """Read rights, source, checksum, generator, and usage restrictions for an asset."""
+    return _post("agent/query", {"query": "asset_provenance", "parameters": {"assetId": asset_id}})
+
+
+@mcp.tool(annotations=READ, structured_output=True)
+def editor_job(job_id: str) -> Dict[str, Any]:
+    """Poll a long-running caption, analysis, voice, or export job."""
+    return _get(f"jobs/{job_id}")
+
+
+@mcp.tool(annotations=WRITE, structured_output=True)
+def editor_cancel_job(job_id: str) -> Dict[str, Any]:
+    """Request cancellation of a queued or running job; partial exports are removed."""
+    return _post(f"jobs/{job_id}/cancel", {"authorization": _authorization_context()})
+
+
+@mcp.tool(annotations=READ, structured_output=True)
 def project_list_snapshots() -> Dict[str, Any]:
     """List named restorable project checkpoints."""
     return _post("agent/query", {"query": "snapshots"})
@@ -187,15 +231,18 @@ def project_restore_snapshot(snapshot_id: str, dry_run: bool = True) -> Dict[str
 
 
 @mcp.tool(annotations=WRITE, structured_output=True)
-def edit_apply(operation: str, parameters: Dict[str, Any], dry_run: bool = True) -> Dict[str, Any]:
+def edit_apply(operation: str, parameters: Dict[str, Any], dry_run: bool = True, operation_id: str = "", expected_revision: Optional[int] = None, rationale: str = "") -> Dict[str, Any]:
     """Run any operation from editor_capabilities. Defaults to dry-run and returns a semantic timeline diff."""
-    return _execute(operation, parameters, dry_run)
+    return _execute(operation, parameters, dry_run, operation_id, expected_revision, rationale)
 
 
 @mcp.tool(annotations=DESTRUCTIVE, structured_output=True)
-def edit_batch(operations: List[Dict[str, Any]], dry_run: bool = True) -> Dict[str, Any]:
+def edit_batch(operations: List[Dict[str, Any]], dry_run: bool = True, operation_id: str = "", expected_revision: Optional[int] = None, rationale: str = "") -> Dict[str, Any]:
     """Execute up to 100 operations atomically. On any error all changes roll back. Defaults to dry-run."""
-    return _post("agent/batch", {"operations": operations, "dryRun": dry_run})
+    body: Dict[str, Any] = {"operations": operations, "dryRun": dry_run, "authorization": _authorization_context(), "rationale": rationale}
+    if operation_id: body["operationId"] = operation_id
+    if expected_revision is not None: body["expectedRevision"] = expected_revision
+    return _post("agent/batch", body)
 
 
 @mcp.tool(annotations=WRITE, structured_output=True)
@@ -464,12 +511,15 @@ def project_save(filename: str = "") -> Dict[str, Any]:
 
 
 @mcp.tool(annotations=EXPORT, structured_output=True)
-def project_export(output_filename: str = "", width: int = 0, height: int = 0, fps: int = 0, quality: str = "standard", caption_mode: str = "burn_in") -> Dict[str, Any]:
+def project_export(output_filename: str = "", width: int = 0, height: int = 0, fps: int = 0, quality: str = "standard", caption_mode: str = "burn_in", operation_id: str = "", expected_revision: Optional[int] = None) -> Dict[str, Any]:
     """Render the verified live timeline to MP4. quality: draft/standard/high/maximum; captions: burn_in/sidecar/none."""
     options: Dict[str, Any] = {"filename": output_filename, "quality": quality, "captionMode": caption_mode}
     if width: options["width"] = width
     if height: options["height"] = height
     if fps: options["fps"] = fps
+    if operation_id: options["operationId"] = operation_id
+    if expected_revision is not None: options["expectedRevision"] = expected_revision
+    options["authorization"] = _authorization_context()
     return _post("export", options, timeout=900)
 
 

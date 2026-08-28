@@ -1,13 +1,16 @@
+import json
 import os
 import uvicorn
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from api.routes import router as api_router
 from api.ws import ws_manager
-from config import EXPORTS_DIR, ASSETS_DIR, HARDWARE_CONFIG
+from config import EXPORTS_DIR, ASSETS_DIR, HARDWARE_CONFIG, REQUIRE_AUTHORIZATION
+from agent.auth import authorize
+from agent.errors import classify_exception
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +29,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def enforce_legacy_mutation_authorization(request, call_next):
+    """Close the legacy UI/API bypass when production authorization is enabled.
+
+    Agent endpoints validate their body context in AgentService. Legacy endpoints
+    use the `X-Viralist-Authorization` JSON header so a browser/service cannot
+    mutate a guarded runtime merely by reaching an old route.
+    """
+    writes = {"POST", "PUT", "PATCH", "DELETE"}
+    if REQUIRE_AUTHORIZATION and request.method in writes and request.url.path.startswith("/api/") and not request.url.path.startswith("/api/agent/"):
+        try:
+            raw = request.headers.get("X-Viralist-Authorization", "")
+            context = json.loads(raw) if raw else None
+            authorize("timeline.write", context)
+        except Exception as exc:
+            error = classify_exception(exc)
+            return JSONResponse(status_code=error.http_status, content=error.payload())
+    return await call_next(request)
 
 # Custom asset streaming route with robust headers
 @app.get("/api/assets/{filename:path}")

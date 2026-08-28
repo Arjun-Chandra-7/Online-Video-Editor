@@ -17,6 +17,12 @@ backend/storage/exports/*
 !backend/storage/exports/.gitkeep
 backend/storage/projects/*
 !backend/storage/projects/.gitkeep
+backend/storage/runtime/*
+!backend/storage/runtime/.gitkeep
+backend/storage/cache/*
+!backend/storage/cache/.gitkeep
+backend/storage/inbox/*
+!backend/storage/inbox/.gitkeep
 test_audio.mp3
 
 # Private/source reference documents and generated memory

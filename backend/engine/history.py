@@ -65,11 +65,18 @@ class HistoryManager:
         removed_clips = [c.id for c in before.clips if c.id not in after_clips]
 
         modified_clips = []
+        clip_changes = []
         for cid, c in after_clips.items():
             if cid in before_clips:
                 b_clip = before_clips[cid]
                 if b_clip.model_dump() != c.model_dump():
                     modified_clips.append(cid)
+                    old, new = b_clip.model_dump(), c.model_dump()
+                    changed = {
+                        key: {"before": old.get(key), "after": new.get(key)}
+                        for key in sorted(set(old) | set(new)) if old.get(key) != new.get(key)
+                    }
+                    clip_changes.append({"clipId": cid, "name": c.name, "changed": changed})
 
         before_tracks = {track.id: track.model_dump() for track in before.tracks}
         after_tracks = {track.id: track.model_dump() for track in after.tracks}
@@ -78,11 +85,21 @@ class HistoryManager:
         before_markers = {marker.id: marker.model_dump() for marker in before.markers}
         after_markers = {marker.id: marker.model_dump() for marker in after.markers}
 
+        removed_intervals = [{"clipId": clip_id, "start": before_clips[clip_id].timelineStart, "end": before_clips[clip_id].timelineEnd, "duration": before_clips[clip_id].timelineEnd - before_clips[clip_id].timelineStart} for clip_id in removed_clips]
+        added_intervals = [{"clipId": clip_id, "start": after_clips[clip_id].timelineStart, "end": after_clips[clip_id].timelineEnd, "duration": after_clips[clip_id].timelineEnd - after_clips[clip_id].timelineStart} for clip_id in added_clips]
         return {
             "durationChange": after.duration - before.duration,
             "clipsAdded": added_clips,
             "clipsRemoved": removed_clips,
             "clipsModified": modified_clips,
+            "clipChanges": clip_changes,
+            "timelineIntervalsRemoved": removed_intervals,
+            "timelineIntervalsAdded": added_intervals,
+            "summary": {
+                "removedTimelineSeconds": round(sum(item["duration"] for item in removed_intervals), 3),
+                "addedTimelineSeconds": round(sum(item["duration"] for item in added_intervals), 3),
+                "meaning": f"Removed {len(removed_clips)} clip(s), added {len(added_clips)} clip(s), and modified {len(modified_clips)} clip(s).",
+            },
             "tracksAdded": sorted(set(after_tracks) - set(before_tracks)),
             "tracksModified": sorted(key for key in set(after_tracks) & set(before_tracks) if after_tracks[key] != before_tracks[key]),
             "captionsAdded": sorted(set(after_captions) - set(before_captions)),

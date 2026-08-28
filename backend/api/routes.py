@@ -16,14 +16,24 @@ from engine.auto_caption_ai import AutoCaptionAI
 from engine.voice_engine import VoiceEngine
 from engine.transcriber import AudioTranscriber
 from api.ws import ws_manager
+from agent.auth import authorize
+from agent.control_store import sha256_file
+from agent.errors import EditorError, classify_exception
+from agent.jobs import JobManager
 from agent.service import AgentOperationError, AgentService
-from config import HARDWARE_CONFIG, ASSETS_DIR, PROJECTS_DIR
+from config import HARDWARE_CONFIG, ASSETS_DIR, PROJECTS_DIR, STORAGE_DIR
 
 router = APIRouter(prefix="/api")
 
 # Singleton Timeline Engine
 timeline_engine = TimelineEngine()
 agent_service = AgentService(timeline_engine)
+job_manager = JobManager(agent_service.store)
+
+
+def _editor_error(exc: Exception) -> HTTPException:
+    error = classify_exception(exc)
+    return HTTPException(status_code=error.http_status, detail=error.payload()["error"])
 
 @router.get("/status")
 def get_system_status():
@@ -33,7 +43,11 @@ def get_system_status():
         "hardware": HARDWARE_CONFIG,
         "activeProject": timeline_engine.state.title,
         "duration": timeline_engine.state.duration,
-        "clipsCount": len(timeline_engine.state.clips)
+        "clipsCount": len(timeline_engine.state.clips),
+        "revision": agent_service.revision,
+        "killSwitch": agent_service.store.kill_switch(),
+        "jobs": job_manager.metrics(),
+        "recoveryCheckpoint": str(agent_service.store.load_recovery() is not None).lower(),
     }
 
 @router.get("/timeline")
@@ -49,8 +63,8 @@ def get_agent_capabilities():
 def agent_query(body: Dict[str, Any]):
     try:
         return agent_service.query(body.get("query", "timeline"), body.get("parameters") or {})
-    except AgentOperationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise _editor_error(exc)
 
 @router.post("/agent/snapshot")
 def agent_create_snapshot(body: Dict[str, Any] = {}):
@@ -63,30 +77,80 @@ async def agent_restore_snapshot(body: Dict[str, Any]):
         if not result["dryRun"]:
             await ws_manager.broadcast("TIMELINE_UPDATED", timeline_engine.inspect())
         return result
-    except AgentOperationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise _editor_error(exc)
 
 @router.post("/agent/execute")
 async def agent_execute(body: Dict[str, Any]):
     try:
-        result = agent_service.execute(body.get("operation", ""), body.get("parameters") or {}, bool(body.get("dryRun", False)))
+        result = agent_service.execute(body.get("operation", ""), body.get("parameters") or {}, bool(body.get("dryRun", False)), body.get("operationId") or body.get("requestId"), body.get("expectedRevision"), body.get("authorization"), body.get("rationale", ""))
         if not result["dryRun"]:
             await ws_manager.broadcast("TIMELINE_UPDATED", timeline_engine.inspect())
             await ws_manager.broadcast("AGENT_ACTIVITY", {"action": f"Agent: {result['operation']}", "source": "mcp"})
         return result
-    except AgentOperationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise _editor_error(exc)
 
 @router.post("/agent/batch")
 async def agent_batch(body: Dict[str, Any]):
     try:
-        result = agent_service.batch(body.get("operations") or [], bool(body.get("dryRun", True)))
+        result = agent_service.batch(body.get("operations") or [], bool(body.get("dryRun", True)), body.get("operationId") or body.get("requestId"), body.get("expectedRevision"), body.get("authorization"), body.get("rationale", ""))
         if not result["dryRun"]:
             await ws_manager.broadcast("TIMELINE_UPDATED", timeline_engine.inspect())
             await ws_manager.broadcast("AGENT_ACTIVITY", {"action": f"Agent batch: {len(result['results'])} operations", "source": "mcp"})
         return result
-    except AgentOperationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise _editor_error(exc)
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    job = job_manager.get(job_id)
+    if not job:
+        raise _editor_error(EditorError("JOB_NOT_FOUND", f"Job '{job_id}' was not found.", http_status=404))
+    return job
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, body: Dict[str, Any] = {}):
+    try:
+        authorize("timeline.write", body.get("authorization"))
+        return job_manager.cancel(job_id)
+    except Exception as exc:
+        raise _editor_error(exc)
+
+
+@router.get("/audit/events")
+def audit_events(limit: int = 100):
+    return {"events": agent_service.store.list_events(limit)}
+
+
+@router.get("/observability")
+def observability():
+    usage = shutil.disk_usage(STORAGE_DIR)
+    events = agent_service.store.list_events(500)
+    return {
+        "service": "online",
+        "project": {"id": timeline_engine.state.id, "revision": agent_service.revision, "title": timeline_engine.state.title},
+        "jobs": job_manager.metrics(),
+        "disk": {"totalBytes": usage.total, "usedBytes": usage.used, "freeBytes": usage.free},
+        "system": {"loadAverage": list(os.getloadavg()) if hasattr(os, "getloadavg") else [], "hardware": HARDWARE_CONFIG},
+        "audit": {"eventsRetained": len(events), "failedEvents": sum(1 for event in events if event.get("outcome") == "failed")},
+        "killSwitch": agent_service.store.kill_switch(),
+    }
+
+
+@router.post("/control/kill-switch")
+def set_kill_switch(body: Dict[str, Any]):
+    try:
+        context = authorize("control.kill_switch", body.get("authorization"))
+        if "*" not in set(context.get("allowedActions") or []) and "control.kill_switch" not in set(context.get("allowedActions") or []):
+            raise EditorError("ACTION_FORBIDDEN", "Kill switch control requires explicit authority.", http_status=403)
+        active = bool(body.get("active", True))
+        agent_service.store.set_kill_switch(active, body.get("reason", ""))
+        return {"success": True, "active": active, "reason": agent_service.store.get_meta("kill_switch_reason")}
+    except Exception as exc:
+        raise _editor_error(exc)
 
 @router.post("/project/settings")
 async def update_project_settings(body: Dict[str, Any]):
@@ -165,6 +229,11 @@ async def upload_media_file(file: UploadFile = File(...)):
         )
 
         timeline_engine.state.assets.insert(0, new_asset)
+        agent_service.store.record_asset(new_asset.id, {
+            "source": "browser_upload", "sourceType": "browser_upload", "creator": None,
+            "license": "user_attested", "usageRestrictions": [], "checksumSha256": sha256_file(target_path),
+            "importedAt": time.time(), "originalFilename": clean_filename,
+        })
         await ws_manager.broadcast("TIMELINE_UPDATED", timeline_engine.inspect())
         await ws_manager.broadcast("AGENT_ACTIVITY", {
             "action": f"Imported {user_friendly_name} ({duration}s)",
@@ -613,6 +682,25 @@ def ai_pacing_analysis():
 
 @router.post("/export")
 def export_render(body: Dict[str, Any] = {}):
-    filename = body.get("filename", "")
-    job = RenderPipeline.render_project(timeline_engine.state, filename, body)
-    return job
+    """Queue a durable render against an immutable timeline snapshot."""
+    try:
+        authorize("project.export", body.get("authorization"))
+        if agent_service.store.kill_switch():
+            raise EditorError("KILL_SWITCH_ACTIVE", "The global kill switch is active.", http_status=423)
+        expected = body.get("expectedRevision")
+        if expected is not None and int(expected) != agent_service.revision:
+            raise EditorError("REVISION_CONFLICT", "Export was requested against a stale project revision.", retryable=True, details={"expectedRevision": expected, "actualRevision": agent_service.revision}, http_status=409)
+        operation_id = body.get("operationId") or body.get("requestId") or f"export_{uuid.uuid4().hex}"
+        snapshot = timeline_engine.state.model_copy(deep=True)
+        options = dict(body)
+        options.pop("authorization", None)
+        def run(progress, cancelled):
+            if cancelled.is_set(): raise EditorError("JOB_CANCELLED", "Render cancelled.")
+            progress(0.08, "Validating render inputs")
+            result = RenderPipeline.render_project(snapshot, options.get("filename", ""), options, progress=progress, cancel_event=cancelled)
+            if result.get("status") != "completed":
+                raise EditorError(result.get("errorCode", "FFMPEG_ERROR"), result.get("error", "Render failed."), retryable=result.get("retryable", False), details=result)
+            return result
+        return job_manager.submit("export", {"revision": agent_service.revision, "options": options}, operation_id, run)
+    except Exception as exc:
+        raise _editor_error(exc)

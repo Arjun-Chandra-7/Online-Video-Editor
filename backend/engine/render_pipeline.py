@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,6 +31,30 @@ class RenderPipeline:
             return None
         candidate = ASSETS_DIR / Path(asset_url.split("?")[0]).name
         return candidate if candidate.exists() and candidate.is_file() else None
+
+    @classmethod
+    def _probe(cls, ffmpeg: str, path: Path) -> Dict[str, Any]:
+        ffprobe = shutil.which("ffprobe") or str(Path(ffmpeg).with_name("ffprobe"))
+        if not Path(ffprobe).exists() and not shutil.which("ffprobe"):
+            return {"available": False}
+        result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration,size:stream=codec_type,codec_name,width,height,r_frame_rate", "-of", "json", str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        if result.returncode:
+            return {"available": False, "error": result.stderr.decode("utf-8", errors="ignore")[-300:]}
+        try: return {"available": True, **__import__("json").loads(result.stdout.decode("utf-8"))}
+        except Exception: return {"available": False}
+
+    @classmethod
+    def _preflight(cls, ffmpeg: str, timeline: TimelineProject, output_path: Path) -> Optional[Dict[str, Any]]:
+        if not ffmpeg:
+            return {"code": "FFMPEG_UNAVAILABLE", "message": "FFmpeg is not installed; no export was created."}
+        missing = [clip.id for clip in timeline.clips if clip.assetType in {"video", "audio", "image"} and clip.assetUrl and not cls._asset_path(clip.assetUrl)]
+        if missing:
+            return {"code": "MISSING_MEDIA", "message": "One or more referenced assets are missing.", "details": {"clipIds": missing}}
+        free = shutil.disk_usage(output_path.parent).free
+        estimated = max(64 * 1024 * 1024, int(timeline.duration * timeline.canvasWidth * timeline.canvasHeight * 0.08))
+        if free < estimated:
+            return {"code": "DISK_FULL", "message": "Not enough free disk space for the estimated render.", "details": {"freeBytes": free, "estimatedBytes": estimated}}
+        return None
 
     @staticmethod
     def _safe_output_name(requested: str) -> str:
@@ -180,7 +205,7 @@ class RenderPipeline:
                 cls._atempo_chain(max(0.1, clip.speed or 1.0)),
             ]
             if clip.audioEnhance > 0:
-                chain.extend(["highpass=f=80", f"equalizer=f=3000:t=q:w=1:g={clip.audioEnhance * 4:.2f}"])
+                chain.extend(["highpass=f=80", "afftdn=nf=-25", f"equalizer=f=3000:t=q:w=1:g={clip.audioEnhance * 4:.2f}"])
             duck_multiplier = timeline.duckingAmount if timeline.autoDucking and clip.trackId == "trk_a2" else 1.0
             chain.append(f"volume={max(0.0, min(2.0, clip.volume * duck_multiplier)):.3f}")
             if clip.fadeIn > 0:
@@ -196,7 +221,8 @@ class RenderPipeline:
             filters.append(f"[{input_index}:a]{','.join(chain)}[{label}]")
             audio_labels.append(f"[{label}]")
         if audio_labels:
-            filters.append(f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:normalize=0:dropout_transition=0[audioout]")
+            filters.append(f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:normalize=0:dropout_transition=0[amixout]")
+            filters.append("[amixout]acompressor=threshold=-18dB:ratio=3:attack=15:release=180,alimiter=limit=0.95,loudnorm=I=-14:TP=-1.5:LRA=11[audioout]")
 
         crf = {"draft": "27", "high": "18", "maximum": "14"}.get(quality, "20")
         preset = "p4" if encoder == "h264_nvenc" else "veryfast"
@@ -215,10 +241,13 @@ class RenderPipeline:
     @classmethod
     def render_project(
         cls, timeline: TimelineProject, output_name: str = "", options: Optional[Dict[str, Any]] = None,
+        progress: Optional[Any] = None, cancel_event: Optional[Any] = None,
     ) -> Dict[str, Any]:
         options = options or {}
         output_name = cls._safe_output_name(output_name)
         output_path = EXPORTS_DIR / output_name
+        partial_path = EXPORTS_DIR / f".{output_name}.{uuid.uuid4().hex[:8]}.partial.mp4"
+        partial_srt_path = partial_path.with_suffix(".srt")
         ffmpeg = cls.get_ffmpeg_bin()
         width = max(320, min(7680, int(options.get("width", timeline.canvasWidth))))
         height = max(320, min(7680, int(options.get("height", timeline.canvasHeight))))
@@ -231,32 +260,100 @@ class RenderPipeline:
             "jobId": f"job_{int(time.time())}", "filename": output_name, "encoder": preferred_encoder,
             "hardwareAcceleration": HARDWARE_CONFIG.get("type", "CPU"), "resolution": f"{width}x{height}",
             "fps": fps, "duration": round(max(0.1, timeline.duration), 2), "status": "error",
-            "downloadUrl": f"/api/exports/{output_name}", "captionDownloadUrl": "/api/captions/srt",
+            "downloadUrl": f"/api/exports/{output_name}", "captionDownloadUrl": "/api/captions/srt", "qa": {},
         }
-        if not ffmpeg:
-            job["error"] = "FFmpeg is not installed; no export was created."
+        failure = cls._preflight(ffmpeg, timeline, output_path)
+        if failure:
+            job["error"] = failure["message"]
+            job["errorCode"] = failure["code"]
+            job["details"] = failure.get("details", {})
             return job
         try:
+            if progress: progress(0.15, "Building FFmpeg render graph")
             command, _ = cls._build_command(
-                ffmpeg, timeline, output_path, width, height, fps, timeline.audioSampleRate,
+                ffmpeg, timeline, partial_path, width, height, fps, timeline.audioSampleRate,
                 quality, caption_mode, preferred_encoder,
             )
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+            result = cls._run_command(command, cancel_event, progress)
             if result.returncode != 0 and preferred_encoder != "libx264":
                 command, _ = cls._build_command(
-                    ffmpeg, timeline, output_path, width, height, fps, timeline.audioSampleRate,
+                    ffmpeg, timeline, partial_path, width, height, fps, timeline.audioSampleRate,
                     quality, caption_mode, "libx264",
                 )
-                result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                if progress: progress(0.45, "Hardware encoder failed; retrying in software")
+                result = cls._run_command(command, cancel_event, progress)
                 job["encoder"] = "libx264"
                 job["hardwareAcceleration"] = "CPU fallback"
             if result.returncode != 0:
                 job["error"] = result.stderr.decode("utf-8", errors="ignore")[-1800:] or "FFmpeg failed."
+                job["errorCode"] = "FFMPEG_ERROR"
                 return job
+            if progress: progress(0.88, "Verifying output artifact")
+            qa = cls._quality_assurance(ffmpeg, partial_path, width, height, fps, timeline.duration, bool(audio_clips := [clip for clip in timeline.clips if clip.assetType == "audio"]))
+            job["qa"] = qa
+            if not qa["passed"]:
+                job["error"] = "Render failed post-export QA."
+                job["errorCode"] = "OUTPUT_QA_FAILED"
+                return job
+            os.replace(partial_path, output_path)
+            if caption_mode == "sidecar" and partial_srt_path.exists():
+                os.replace(partial_srt_path, output_path.with_suffix(".srt"))
             job["status"] = "completed"
             job["fileSize"] = f"{os.path.getsize(output_path) / (1024 * 1024):.2f} MB"
+            if progress: progress(1.0, "Render verified")
         except subprocess.TimeoutExpired:
             job["error"] = "Render exceeded the five-minute safety timeout."
+            job["errorCode"] = "EXPORT_TIMEOUT"
         except Exception as exc:
             job["error"] = str(exc)
+            job["errorCode"] = "RENDER_INTERNAL_ERROR"
+        finally:
+            partial_path.unlink(missing_ok=True)
+            partial_srt_path.unlink(missing_ok=True)
         return job
+
+    @staticmethod
+    def _run_command(command: List[str], cancel_event: Optional[Any], progress: Optional[Any]) -> subprocess.CompletedProcess:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        started = time.monotonic()
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                try: process.wait(timeout=10)
+                except subprocess.TimeoutExpired: process.kill()
+                raise RuntimeError("Render cancelled")
+            if time.monotonic() - started > 300:
+                process.kill()
+                raise subprocess.TimeoutExpired(command, 300)
+            if progress: progress(min(0.82, 0.2 + (time.monotonic() - started) / 300 * 0.6), "Rendering frames")
+            time.sleep(0.25)
+        stdout, stderr = process.communicate()
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    @classmethod
+    def _quality_assurance(cls, ffmpeg: str, output_path: Path, width: int, height: int, fps: int, expected_duration: float, expects_audio: bool) -> Dict[str, Any]:
+        probe = cls._probe(ffmpeg, output_path)
+        checks: Dict[str, Any] = {"container": probe.get("available", False), "nonEmpty": output_path.exists() and output_path.stat().st_size > 1024}
+        streams = probe.get("streams", [])
+        video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
+        audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
+        duration = float(probe.get("format", {}).get("duration", 0) or 0)
+        checks.update({"videoStream": bool(video), "audioStream": bool(audio) or not expects_audio, "resolution": video.get("width") == width and video.get("height") == height, "duration": abs(duration - expected_duration) <= max(1.0, expected_duration * 0.03), "durationSeconds": duration, "expectedDurationSeconds": expected_duration, "codec": video.get("codec_name")})
+        checks["blackFrameCheck"] = cls._scan_signal(ffmpeg, output_path, "blackdetect=d=0.4:pix_th=0.10", "black_start")
+        checks["frozenFrameCheck"] = cls._scan_signal(ffmpeg, output_path, "freezedetect=n=0.003:d=1", "freeze_start")
+        checks["silenceCheck"] = cls._scan_signal(ffmpeg, output_path, "silencedetect=n=-50dB:d=1", "silence_start") if expects_audio else {"status": "not_applicable"}
+        checks["syncCheck"] = {"status": "heuristic", "result": "container timestamps accepted"}
+        blockers = [name for name in ("container", "nonEmpty", "videoStream", "resolution", "duration") if not checks[name]]
+        return {"passed": not blockers, "blockers": blockers, "checks": checks, "evidenceClass": "RENDER_TECHNICAL_QA"}
+
+    @staticmethod
+    def _scan_signal(ffmpeg: str, output_path: Path, filter_name: str, marker: str) -> Dict[str, Any]:
+        """Bounded technical scan; findings warn rather than invalidate content."""
+        try:
+            result = subprocess.run([ffmpeg, "-v", "info", "-i", str(output_path), "-vf" if not filter_name.startswith("silence") else "-af", filter_name, "-f", "null", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+            text = result.stderr.decode("utf-8", errors="ignore")
+            return {"status": "passed" if marker not in text else "warning", "findings": text.count(marker)}
+        except subprocess.TimeoutExpired:
+            return {"status": "not_run", "reason": "scan_timeout"}
+        except Exception as exc:
+            return {"status": "not_run", "reason": str(exc)[:160]}

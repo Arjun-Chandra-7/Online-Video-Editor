@@ -28,8 +28,8 @@ Use ergonomic tools for ordinary edits. Use generic `edit_apply` only when a cap
 
 ## Choose the relevant guide
 
-- Read [references/TOOL_REFERENCE.md](references/TOOL_REFERENCE.md) for tool families, legal enum values, operation payloads, safety semantics, and environment variables.
-- Read [references/WORKFLOWS.md](references/WORKFLOWS.md) for executable recipes: assembly, transcript editing, captions, grading, audio, short-form automation, and export QA.
+- Read [TOOL_REFERENCE.md](TOOL_REFERENCE.md) for tool families, legal enum values, operation payloads, safety semantics, and environment variables.
+- Read [WORKFLOWS.md](WORKFLOWS.md) for executable recipes: assembly, transcript editing, captions, grading, audio, short-form automation, and export QA.
 - Read [README.md](README.md) only for installation, MCP client configuration, architecture, and development.
 
 ## Completion contract
@@ -43,3 +43,13 @@ Before claiming an edit is complete, report the final project revision and verif
 - returned export URL when an MP4 was requested.
 
 The editor is local-first. Local import paths must be readable by the machine running Viralist. Voice generation can require network access. Rendering requires FFmpeg.
+
+## Production agent contract
+
+- Every committed `edit_apply`, `edit_batch`, and `project_export` must include a unique `operation_id`; a retry with the same ID safely replays the committed result instead of editing twice.
+- Pass `expected_revision` from the immediately preceding inspection. A stale plan fails with `REVISION_CONFLICT`; re-inspect rather than forcing it through.
+- `media_import_local` only reads `backend/storage/inbox` plus explicitly configured `VIRALIST_MEDIA_ROOTS`. Place files there; agents must never probe arbitrary machine paths.
+- Treat structured error `code`, `retryable`, and `recommendedAction` as the control signal. Do not retry permission, rights, lock, or revision failures blindly.
+- Exports return a `jobId`. Poll `editor_job(job_id)` until `succeeded`, `failed`, or `cancelled`; use `editor_cancel_job` for a safe stop.
+- In guarded deployments, supply a Manager-issued JSON authorization context through `VIRALIST_AUTHORIZATION_JSON`. The editor checks it itself, including for legacy HTTP mutation routes.
+- Query `editor_events` for durable audit history and `media_provenance` before using assets with unknown rights. Pacing/energy outputs are editor heuristics, not independent performance evidence.

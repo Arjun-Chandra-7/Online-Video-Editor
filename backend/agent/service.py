@@ -10,7 +10,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config import ASSETS_DIR
+from config import APPROVED_MEDIA_ROOTS, APPROVED_PROJECT_ROOTS, ASSETS_DIR, resolve_in_roots
+from agent.auth import authorize
+from agent.control_store import ControlStore, sha256_file
+from agent.errors import EditorError, classify_exception
 from engine.history import HistoryManager
 from engine.intelligence import IntelligenceEngine
 from engine.timeline import TimelineEngine
@@ -18,21 +21,31 @@ from engine.transcriber import AudioTranscriber
 from models.schema import Asset, CaptionItem, CaptionStyle, TimelineProject, WordTimestamp
 
 
-class AgentOperationError(ValueError):
-    pass
+class AgentOperationError(EditorError):
+    def __init__(self, message: str, code: str = "VALIDATION_ERROR", **kwargs: Any):
+        super().__init__(code, message, **kwargs)
 
 
 class AgentService:
     """Atomic, inspectable operations over the live editor timeline."""
 
-    VERSION = "2.0.0"
+    VERSION = "3.0.0"
+    MCP_SCHEMA_VERSION = "3.0"
+    PROJECT_SCHEMA_VERSION = "1.0"
 
     def __init__(self, engine: TimelineEngine):
         self.engine = engine
         self.lock = threading.RLock()
+        self.store = ControlStore()
+        recovered = self.store.load_recovery()
+        if recovered:
+            self.engine.state = recovered["state"]
+            self.revision = recovered["revision"]
+        else:
+            self.revision = self.store.revision()
+            self.store.save_recovery(self.engine.state, self.revision)
         self.snapshots: Dict[str, Dict[str, Any]] = {}
         self.activity: List[Dict[str, Any]] = []
-        self.revision = 0
 
     @property
     def operation_names(self) -> List[str]:
@@ -52,6 +65,10 @@ class AgentService:
         return {
             "name": "Viralist Agent Video Editor",
             "version": self.VERSION,
+            "mcpSchemaVersion": self.MCP_SCHEMA_VERSION,
+            "projectSchemaVersion": self.PROJECT_SCHEMA_VERSION,
+            "compatibleMcpSchemaVersions": ["3.0"],
+            "compatibleProjectSchemaVersions": ["1.0"],
             "revision": self.revision,
             "operations": self.operation_names,
             "queries": ["timeline", "media", "transcript", "history", "snapshots", "pacing", "hooks", "energy"],
@@ -64,6 +81,13 @@ class AgentService:
                 "wordTimestamps": True,
                 "hardwareExport": True,
                 "webUiSynchronization": True,
+                "idempotency": True,
+                "expectedRevision": True,
+                "persistentRecovery": True,
+                "structuredErrors": True,
+                "authorizationContext": True,
+                "asyncJobs": True,
+                "assetProvenance": True,
             },
             "enums": {
                 "trackTypes": ["video", "audio"],
@@ -95,6 +119,7 @@ class AgentService:
                 "volume": {"min": 0.0, "max": 2.0},
                 "pan": {"min": -1.0, "max": 1.0},
                 "opacity": {"min": 0.0, "max": 1.0},
+                "approvedMediaRoots": [str(root) for root in APPROVED_MEDIA_ROOTS],
             },
             "batchExample": [
                 {"operation": "clip.split", "parameters": {"clipId": "<from project_inspect>", "time": 3.5}},
@@ -151,15 +176,21 @@ class AgentService:
                 "undoDepth": len(self.engine.history.undo_stack),
                 "redoDepth": len(self.engine.history.redo_stack),
                 "recentActivity": self.activity[-50:],
+                "persistentEvents": self.store.list_events(50),
             }
         if query == "snapshots":
-            return {"snapshots": [value["meta"] for value in self.snapshots.values()]}
+            return {"snapshots": self.store.list_snapshots()}
         if query == "pacing":
             return IntelligenceEngine.analyze_pacing(state)
         if query == "hooks":
             return {"hooks": IntelligenceEngine.generate_viral_hooks(state)}
         if query == "energy":
-            return {"curve": IntelligenceEngine.analyze_energy_curve(state)}
+            return {"curve": IntelligenceEngine.analyze_energy_curve(state), "evidenceClass": "EDITOR_HEURISTIC", "independentAudit": False, "algorithmVersion": "energy-heuristic-1"}
+        if query == "asset_provenance":
+            asset_id = str(parameters.get("assetId", ""))
+            return {"assetId": asset_id, "provenance": self.store.asset_provenance(asset_id)}
+        if query == "events":
+            return {"events": self.store.list_events(int(parameters.get("limit", 100)))}
         raise AgentOperationError(f"Unknown query '{query}'")
 
     def create_snapshot(self, label: str = "Agent checkpoint") -> Dict[str, Any]:
@@ -171,30 +202,53 @@ class AgentService:
                 "clips": len(self.engine.state.clips), "captions": len(self.engine.state.captions),
             }
             self.snapshots[snapshot_id] = {"meta": meta, "state": copy.deepcopy(self.engine.state)}
+            self.store.save_snapshot(snapshot_id, meta, self.engine.state)
             return meta
 
     def restore_snapshot(self, snapshot_id: str, dry_run: bool = False) -> Dict[str, Any]:
         with self.lock:
-            entry = self.snapshots.get(snapshot_id)
+            entry = self.snapshots.get(snapshot_id) or self.store.get_snapshot(snapshot_id)
             if not entry:
                 raise AgentOperationError(f"Snapshot '{snapshot_id}' not found")
             before = copy.deepcopy(self.engine.state)
+            revision_before = self.revision
             after = copy.deepcopy(entry["state"])
             diff = HistoryManager.compute_diff(before, after)
             if not dry_run:
                 self.engine.history.push(self.engine.state, f"Restore snapshot {snapshot_id}")
                 self.engine.state = after
                 self.revision += 1
+                self.store.set_revision(self.revision)
+                self.store.save_recovery(self.engine.state, self.revision)
                 self._log("snapshot.restore", {"snapshotId": snapshot_id}, diff)
             return {"success": True, "dryRun": dry_run, "snapshot": entry["meta"], "diff": diff, "revision": self.revision}
 
-    def execute(self, operation: str, parameters: Optional[Dict[str, Any]] = None, dry_run: bool = False) -> Dict[str, Any]:
+    def execute(self, operation: str, parameters: Optional[Dict[str, Any]] = None, dry_run: bool = False, operation_id: Optional[str] = None, expected_revision: Optional[int] = None, authorization: Optional[Dict[str, Any]] = None, rationale: str = "") -> Dict[str, Any]:
         parameters = parameters or {}
         with self.lock:
+            operation_id = operation_id or f"op_{uuid.uuid4().hex}"
+            context = authorize(operation, authorization)
+            if self.store.kill_switch():
+                raise AgentOperationError("The global kill switch is active; no mutations are allowed.", "KILL_SWITCH_ACTIVE", recommended_action="Ask the Manager or owner to resume Viralist.", http_status=423)
+            if expected_revision is not None and int(expected_revision) != self.revision:
+                raise AgentOperationError(f"Expected revision {expected_revision}, but project is revision {self.revision}.", "REVISION_CONFLICT", retryable=True, recommended_action="Reinspect the project and regenerate the edit plan.", details={"expectedRevision": expected_revision, "actualRevision": self.revision}, http_status=409)
+            if not dry_run:
+                cached = self.store.get_operation(operation_id)
+                if cached:
+                    if cached["response"]:
+                        return {**cached["response"], "idempotentReplay": True}
+                    raise AgentOperationError("An operation with this ID is already running.", "OPERATION_IN_PROGRESS", retryable=True, recommended_action="Poll the operation/job state before retrying.", http_status=409)
+                if not self.store.begin_operation(operation_id):
+                    existing = self.store.get_operation(operation_id)
+                    if existing and existing["response"]:
+                        return {**existing["response"], "idempotentReplay": True}
+                    raise AgentOperationError("An operation with this ID is already running.", "OPERATION_IN_PROGRESS", retryable=True, recommended_action="Poll the operation/job state before retrying.", http_status=409)
             before = copy.deepcopy(self.engine.state)
+            revision_before = self.revision
             files_before = {path.resolve() for path in ASSETS_DIR.glob("agent_*")}
             undo_before = copy.deepcopy(self.engine.history.undo_stack)
             redo_before = copy.deepcopy(self.engine.history.redo_stack)
+            started = time.monotonic()
             try:
                 result = self._invoke(operation, parameters)
                 diff = HistoryManager.compute_diff(before, self.engine.state)
@@ -211,28 +265,58 @@ class AgentService:
                         self.engine.history.redo_stack = redo_before
                         self.engine.history.push(before, f"Agent: {operation}")
                     self.revision += 1
-                    self._log(operation, parameters, diff)
-                return {"success": True, "dryRun": dry_run, "operation": operation, "result": result, "diff": diff, "revision": self.revision}
+                    self.store.set_revision(self.revision)
+                    self.store.save_recovery(self.engine.state, self.revision)
+                    self._log(operation, parameters, diff, operation_id, context, rationale, started)
+                response = {"success": True, "dryRun": dry_run, "operation": operation, "operationId": operation_id, "result": result, "diff": diff, "revision": self.revision, "idempotentReplay": False}
+                if not dry_run:
+                    self.store.finish_operation(operation_id, response)
+                return response
             except Exception as exc:
                 self.engine.state = before
                 self.engine.history.undo_stack = undo_before
                 self.engine.history.redo_stack = redo_before
                 self._cleanup_imports(files_before)
-                if isinstance(exc, AgentOperationError):
-                    raise
-                raise AgentOperationError(str(exc)) from exc
+                error = classify_exception(exc)
+                if not dry_run:
+                    # A failure after a persistence attempt must leave both the
+                    # in-memory timeline and its durable checkpoint at the same
+                    # known-good revision.
+                    self.revision = revision_before
+                    self.store.set_revision(revision_before)
+                    self.store.finish_operation(operation_id, {"success": False, "operationId": operation_id, "error": error.payload()["error"]}, "failed")
+                    self.store.save_recovery(before, revision_before)
+                    self._log(operation, parameters, {}, operation_id, context, rationale, started, error)
+                raise error from exc
 
-    def batch(self, operations: List[Dict[str, Any]], dry_run: bool = True) -> Dict[str, Any]:
+    def batch(self, operations: List[Dict[str, Any]], dry_run: bool = True, operation_id: Optional[str] = None, expected_revision: Optional[int] = None, authorization: Optional[Dict[str, Any]] = None, rationale: str = "") -> Dict[str, Any]:
         if not operations:
             raise AgentOperationError("Batch requires at least one operation")
         if len(operations) > 100:
             raise AgentOperationError("Batch limit is 100 operations")
         with self.lock:
+            operation_id = operation_id or f"op_{uuid.uuid4().hex}"
+            context = authorize("timeline.write", authorization)
+            if self.store.kill_switch():
+                raise AgentOperationError("The global kill switch is active; no mutations are allowed.", "KILL_SWITCH_ACTIVE", http_status=423)
+            if expected_revision is not None and int(expected_revision) != self.revision:
+                raise AgentOperationError("Batch was planned against a stale revision.", "REVISION_CONFLICT", retryable=True, recommended_action="Reinspect and regenerate the batch.", details={"expectedRevision": expected_revision, "actualRevision": self.revision}, http_status=409)
+            if not dry_run:
+                cached = self.store.get_operation(operation_id)
+                if cached:
+                    if cached["response"]: return {**cached["response"], "idempotentReplay": True}
+                    raise AgentOperationError("An operation with this ID is already running.", "OPERATION_IN_PROGRESS", retryable=True, http_status=409)
+                if not self.store.begin_operation(operation_id):
+                    existing = self.store.get_operation(operation_id)
+                    if existing and existing["response"]: return {**existing["response"], "idempotentReplay": True}
+                    raise AgentOperationError("An operation with this ID is already running.", "OPERATION_IN_PROGRESS", retryable=True, http_status=409)
             before = copy.deepcopy(self.engine.state)
+            revision_before = self.revision
             files_before = {path.resolve() for path in ASSETS_DIR.glob("agent_*")}
             undo_before = copy.deepcopy(self.engine.history.undo_stack)
             redo_before = copy.deepcopy(self.engine.history.redo_stack)
             results = []
+            started = time.monotonic()
             try:
                 for index, item in enumerate(operations):
                     name = item.get("operation")
@@ -253,23 +337,34 @@ class AgentService:
                     self.engine.history.redo_stack = redo_before
                     self.engine.history.push(before, f"Agent batch ({len(operations)} operations)")
                     self.revision += 1
-                    self._log("batch", {"count": len(operations)}, diff)
-                return {"success": True, "dryRun": dry_run, "results": results, "diff": diff, "revision": self.revision}
+                    self.store.set_revision(self.revision)
+                    self.store.save_recovery(self.engine.state, self.revision)
+                    self._log("batch", {"count": len(operations)}, diff, operation_id, context, rationale, started)
+                response = {"success": True, "dryRun": dry_run, "operationId": operation_id, "results": results, "diff": diff, "revision": self.revision, "idempotentReplay": False}
+                if not dry_run: self.store.finish_operation(operation_id, response)
+                return response
             except Exception as exc:
                 self.engine.state = before
                 self.engine.history.undo_stack = undo_before
                 self.engine.history.redo_stack = redo_before
                 self._cleanup_imports(files_before)
-                raise AgentOperationError(f"Batch rolled back: {exc}") from exc
+                error = classify_exception(exc)
+                if not dry_run:
+                    self.revision = revision_before
+                    self.store.set_revision(revision_before)
+                    self.store.finish_operation(operation_id, {"success": False, "operationId": operation_id, "error": error.payload()["error"]}, "failed")
+                    self.store.save_recovery(before, revision_before)
+                    self._log("batch", {"count": len(operations)}, {}, operation_id, context, rationale, started, error)
+                raise error from exc
 
     def _require(self, value: Any, name: str) -> Any:
         if value is None or value == "":
-            raise AgentOperationError(f"Missing required parameter '{name}'")
+            raise AgentOperationError(f"Missing required parameter '{name}'", "VALIDATION_ERROR")
         return value
 
-    def _ok(self, ok: Any, message: str) -> Any:
+    def _ok(self, ok: Any, message: str, code: str = "OPERATION_REJECTED") -> Any:
         if not ok:
-            raise AgentOperationError(message)
+            raise AgentOperationError(message, code)
         return ok
 
     def _invoke(self, operation: str, p: Dict[str, Any]) -> Any:
@@ -280,8 +375,9 @@ class AgentService:
             value = max(0.0, min(float(self._require(p.get("time"), "time")), e.state.duration))
             e.state.playhead = round(value, 3); return {"playhead": e.state.playhead}
         if operation == "project.load_local":
-            source = Path(str(self._require(p.get("path"), "path"))).expanduser().resolve()
-            if not source.exists() or not source.is_file(): raise AgentOperationError(f"Project file not found: {source}")
+            try: source = resolve_in_roots(str(self._require(p.get("path"), "path")), APPROVED_PROJECT_ROOTS, "Project path")
+            except PermissionError as exc: raise AgentOperationError(str(exc), "PATH_NOT_ALLOWED", http_status=403) from exc
+            if not source.is_file(): raise AgentOperationError("Project path is not a file.", "PROJECT_NOT_FOUND")
             try:
                 loaded = TimelineProject.model_validate(json.loads(source.read_text(encoding="utf-8")))
             except Exception as exc:
@@ -289,15 +385,19 @@ class AgentService:
             e.state = loaded
             return {"path": str(source), "projectId": loaded.id, "title": loaded.title}
         if operation == "media.import_local":
-            source = Path(str(self._require(p.get("path"), "path"))).expanduser().resolve()
-            if not source.exists() or not source.is_file(): raise AgentOperationError(f"Media file not found: {source}")
-            ext = source.suffix.lower(); media_type = "video" if ext in {".mp4", ".mov", ".mkv", ".webm"} else "image" if ext in {".png", ".jpg", ".jpeg", ".webp"} else "audio"
+            try: source = resolve_in_roots(str(self._require(p.get("path"), "path")), APPROVED_MEDIA_ROOTS, "Media path")
+            except PermissionError as exc: raise AgentOperationError(str(exc), "PATH_NOT_ALLOWED", http_status=403) from exc
+            if not source.is_file(): raise AgentOperationError("Media path is not a file.", "ASSET_NOT_FOUND")
+            ext = source.suffix.lower(); media_type = "video" if ext in {".mp4", ".mov", ".mkv", ".webm", ".m4v"} else "image" if ext in {".png", ".jpg", ".jpeg", ".webp"} else "audio" if ext in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"} else ""
+            if not media_type: raise AgentOperationError(f"Unsupported media extension '{ext}'.", "UNSUPPORTED_CODEC")
             safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", source.name)
             target = ASSETS_DIR / f"agent_{int(time.time())}_{safe}"
             shutil.copy2(source, target)
             duration = float(p.get("imageDuration", 5.0) if media_type == "image" else AudioTranscriber.get_media_duration(target))
             asset = Asset(id=f"ast_{uuid.uuid4().hex[:10]}", name=p.get("name") or source.stem, url=f"/api/assets/{target.name}", type=media_type, duration=duration, tags=list(p.get("tags") or ["agent_import"]))
-            e.state.assets.insert(0, asset); return asset.model_dump()
+            provenance = {"source": str(source), "sourceType": p.get("sourceType", "local_upload"), "creator": p.get("creator"), "generator": p.get("generator"), "modelVersion": p.get("modelVersion"), "generationPrompt": p.get("generationPrompt"), "license": p.get("license", "unknown"), "permissionReference": p.get("permissionReference"), "usageRestrictions": list(p.get("usageRestrictions") or []), "checksumSha256": sha256_file(target), "importedAt": time.time()}
+            self.store.record_asset(asset.id, provenance)
+            e.state.assets.insert(0, asset); return {**asset.model_dump(), "provenance": provenance}
         if operation == "media.remove":
             asset_id = self._require(p.get("assetId"), "assetId")
             if any(c.assetId == asset_id for c in e.state.clips): raise AgentOperationError("Asset is in use on the timeline")
@@ -332,7 +432,7 @@ class AgentService:
         if operation == "clip.add":
             asset_id = self._require(p.get("assetId"), "assetId")
             asset = next((item for item in e.state.assets if item.id == asset_id), None)
-            self._ok(asset, "Asset not found; import or query media first")
+            self._ok(asset, "Asset not found; import or query media first", "ASSET_NOT_FOUND")
             duration = float(p.get("duration", asset.duration if asset.type != "image" else 5.0))
             if duration <= 0: raise AgentOperationError("Clip duration must be greater than zero")
             clip = e.add_clip(self._require(p.get("trackId"), "trackId"), asset_id, float(p.get("startTime", 0)), duration, asset.url, asset.name, asset.type, bool(p.get("replaceTrack", False)))
@@ -406,9 +506,32 @@ class AgentService:
             if self.engine.delete_transcript_range(start, end): removed.append(word)
         return {"removedCount": len(removed), "removedWords": list(reversed(removed))}
 
-    def _log(self, operation: str, parameters: Dict[str, Any], diff: Dict[str, Any]) -> None:
-        self.activity.append({"revision": self.revision, "timestamp": time.time(), "operation": operation, "parameters": parameters, "diff": diff})
+    def _log(self, operation: str, parameters: Dict[str, Any], diff: Dict[str, Any], operation_id: str = "", context: Optional[Dict[str, Any]] = None, rationale: str = "", started: Optional[float] = None, error: Optional[EditorError] = None) -> None:
+        """Persist a compact event that organizational memory can consume directly."""
+        context = context or {}
+        timestamp = time.time()
+        event = {
+            "eventId": f"evt_{uuid.uuid4().hex}",
+            "timestamp": timestamp,
+            "actorId": context.get("actorId", "local-unscoped"),
+            "projectId": context.get("projectId", self.engine.state.id),
+            "contentId": context.get("contentId"),
+            "channelId": context.get("channelId"),
+            "operationId": operation_id,
+            "operation": operation,
+            "beforeRevision": self.revision if error else max(0, self.revision - 1),
+            "afterRevision": self.revision,
+            "rationale": rationale[:2000],
+            "parameters": parameters,
+            "diff": diff,
+            "cost": {"wallTimeMs": round((time.monotonic() - started) * 1000, 2) if started is not None else None},
+            "artifacts": [],
+            "outcome": "failed" if error else "succeeded",
+            "errorCode": error.code if error else None,
+        }
+        self.activity.append(event)
         self.activity = self.activity[-200:]
+        self.store.log_event(event)
 
     @staticmethod
     def _cleanup_imports(files_before: set[Path]) -> None:

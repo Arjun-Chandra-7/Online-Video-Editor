@@ -1,0 +1,21 @@
+[Unit]
+Description=Viralist AI Video Editor API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/viralist
+EnvironmentFile=/etc/viralist/viralist.env
+ExecStart=/opt/viralist/.venv/bin/python /opt/viralist/backend/main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/viralist/backend/storage
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

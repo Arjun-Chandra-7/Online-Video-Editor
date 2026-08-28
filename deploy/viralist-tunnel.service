@@ -1,0 +1,18 @@
+[Unit]
+Description=Viralist tunnel client
+After=network-online.target viralist.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/viralist/tunnel.env
+ExecStart=/usr/local/bin/tunnel-client --config /etc/viralist/tunnel.yml run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
