@@ -65,6 +65,15 @@ class RenderPipeline:
             return {"available": False, "error": str(exc)}
 
     @classmethod
+    def _has_audio_stream(cls, path: Optional[Path]) -> bool:
+        if not path or not path.exists():
+            return False
+        probe = cls._probe_media(path)
+        if not probe.get("available"):
+            return False
+        return any(s.get("codec_type") == "audio" for s in probe.get("streams", []))
+
+    @classmethod
     def _preflight(cls, ffmpeg: str, timeline: TimelineProject, output_path: Path) -> Optional[Dict[str, Any]]:
         if not ffmpeg:
             return {"code": "FFMPEG_UNAVAILABLE", "message": "FFmpeg is not installed; cannot render video."}
@@ -179,15 +188,18 @@ class RenderPipeline:
 
         audio_clips = [
             clip for clip in timeline.clips
-            if clip.assetType == "audio" and track_map.get(clip.trackId)
-            and not track_map[clip.trackId].muted and cls._asset_path(clip.assetUrl)
+            if (clip.assetType == "audio" or (clip.assetType == "video" and cls._has_audio_stream(cls._asset_path(clip.assetUrl))))
+            and track_map.get(clip.trackId)
+            and not track_map[clip.trackId].muted
+            and cls._asset_path(clip.assetUrl)
+            and (clip.volume or 1.0) > 0.0
         ]
 
         command = [ffmpeg, "-y", "-f", "lavfi", "-i", f"color=c=0x0E1013:s={width}x{height}:d={duration}:r={fps}"]
         input_indices: Dict[str, int] = {}
         next_index = 1
 
-        for clip in [*video_clips, *audio_clips]:
+        for clip in video_clips:
             source = cls._asset_path(clip.assetUrl)
             if not source:
                 continue
@@ -195,6 +207,16 @@ class RenderPipeline:
                 command.extend(["-loop", "1", "-i", str(source)])
             else:
                 command.extend(["-i", str(source)])
+            input_indices[clip.id] = next_index
+            next_index += 1
+
+        for clip in audio_clips:
+            if clip.id in input_indices:
+                continue
+            source = cls._asset_path(clip.assetUrl)
+            if not source:
+                continue
+            command.extend(["-i", str(source)])
             input_indices[clip.id] = next_index
             next_index += 1
 
@@ -451,7 +473,7 @@ class RenderPipeline:
 
             if progress:
                 progress(0.88, "Executing comprehensive technical QA")
-            expects_audio = bool([clip for clip in timeline.clips if clip.assetType == "audio"])
+            expects_audio = bool([clip for clip in timeline.clips if (clip.assetType == "audio" or (clip.assetType == "video" and cls._has_audio_stream(cls._asset_path(clip.assetUrl)))) and not (track_map.get(clip.trackId) and track_map[clip.trackId].muted)])
             qa = cls._quality_assurance(ffmpeg, partial_path, width, height, fps, timeline.duration, expects_audio, timeline.captions)
             job["qa"] = qa
 

@@ -67,6 +67,9 @@ export const Player: React.FC = () => {
   const audioTrack = activeAudioClip ? project?.tracks.find(track => track.id === activeAudioClip.trackId) : undefined;
   const effectiveVolume = isMuted || audioTrack?.muted ? 0 : masterVolume * (activeAudioClip?.volume ?? 1);
 
+  const videoTrack = activeVideoClip ? project?.tracks.find(track => track.id === activeVideoClip.trackId) : undefined;
+  const effectiveVideoVolume = isMuted || videoTrack?.muted ? 0 : masterVolume * (activeVideoClip?.volume ?? 1);
+
   // Initialize Web Audio API Equalizer Graph for Real Sound Manipulation
   useEffect(() => {
     const aud = audioRef.current;
@@ -161,7 +164,12 @@ export const Player: React.FC = () => {
     if (gainNodeRef.current && audioCtxRef.current) {
       gainNodeRef.current.gain.setValueAtTime(effectiveVolume, audioCtxRef.current.currentTime);
     }
-  }, [effectiveVolume]);
+    const vid = videoRef.current;
+    if (vid) {
+      vid.muted = effectiveVideoVolume === 0;
+      vid.volume = Math.min(1, Math.max(0, effectiveVideoVolume));
+    }
+  }, [effectiveVolume, effectiveVideoVolume]);
 
   // Ensure audio element loads latest voiceover
   useEffect(() => {
@@ -227,6 +235,8 @@ export const Player: React.FC = () => {
       }
 
       if (vid && activeVideoClip) {
+        vid.muted = effectiveVideoVolume === 0;
+        vid.volume = Math.min(1, Math.max(0, effectiveVideoVolume));
         const clipOffset = Math.max(0, (playhead - activeVideoClip.timelineStart) + (activeVideoClip.sourceStart || 0));
         if (Math.abs(vid.currentTime - clipOffset) > 0.15) {
           vid.currentTime = Math.min(clipOffset, vid.duration || 1000);
@@ -237,7 +247,7 @@ export const Player: React.FC = () => {
       if (aud) aud.pause();
       if (vid) vid.pause();
     }
-  }, [isPlaying, activeAudioClip?.id, effectiveVolume]);
+  }, [isPlaying, activeAudioClip?.id, activeVideoClip?.id, effectiveVolume, effectiveVideoVolume]);
 
   // 60FPS Playback Loop — Smooth delta-timed playback across video, audio, and image assets
   useEffect(() => {
@@ -670,7 +680,7 @@ export const Player: React.FC = () => {
                   ref={videoRef}
                   className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'}`}
                   playsInline
-                  muted={true}
+                  muted={effectiveVideoVolume === 0}
                   preload="auto"
                   loop
                 />
