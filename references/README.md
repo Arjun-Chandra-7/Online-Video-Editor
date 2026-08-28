@@ -40,6 +40,16 @@ Start the web editor manually:
 
 Open `http://localhost:8080`. API health is available at `http://localhost:8080/api/status`.
 
+## Deploy to Vercel (For Human Users)
+
+The frontend can be deployed directly to Vercel so human creators can access the NLE interface from anywhere:
+
+1. Import this repository in [Vercel](https://vercel.com/new). Vercel will automatically detect `vercel.json` and build the web client.
+2. Open your Vercel URL (e.g. `https://my-viralist.vercel.app`).
+3. Click the **Engine** pill in the top header to connect your local engine (`http://localhost:8080`) or remote Cloudflare Tunnel URL.
+4. If offline, the web client runs in **Interactive Demo Mode** allowing creators to test the studio UI without a backend.
+5. See [VERCEL.md](../VERCEL.md) for complete details.
+
 ## Give it to an agent
 
 Viralist uses MCP over stdio and auto-starts the web editor if it is offline. Use absolute paths in client configuration.

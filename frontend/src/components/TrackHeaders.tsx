@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEditorStore } from '../store/useEditorStore';
+import { apiFetch } from '../utils/api';
 import {
   Eye,
   EyeOff,
@@ -20,9 +21,8 @@ export const TrackHeaders: React.FC = () => {
 
   const handleAddTrack = async (trackType: 'video' | 'audio') => {
     try {
-      const res = await fetch('/api/timeline/add_track', {
+      const res = await apiFetch('/api/timeline/add_track', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ trackType })
       });
       if (res.ok) {

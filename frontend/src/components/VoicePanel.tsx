@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useEditorStore } from '../store/useEditorStore';
+import { apiFetch, resolveAssetUrl } from '../utils/api';
 import {
   Mic,
   Play,
@@ -39,12 +40,12 @@ export const VoicePanel: React.FC = () => {
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    fetch('/api/voices')
+    apiFetch('/api/voices')
       .then(r => r.json())
       .then(data => {
         if (data.voices) setVoices(data.voices);
       })
-      .catch(e => console.error('Failed to load voices:', e));
+      .catch(e => console.warn('Failed to load voices from engine, using catalog defaults:', e));
   }, []);
 
   const handlePlayPreview = async (voice: VoiceItem) => {
@@ -55,15 +56,14 @@ export const VoicePanel: React.FC = () => {
     }
 
     try {
-      const res = await fetch('/api/voices/preview', {
+      const res = await apiFetch('/api/voices/preview', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ voiceCode: voice.code })
       });
       const data = await res.json();
       if (data.previewUrl) {
         if (previewAudioRef.current) {
-          previewAudioRef.current.src = data.previewUrl;
+          previewAudioRef.current.src = resolveAssetUrl(data.previewUrl);
           previewAudioRef.current.play();
           setPlayingPreviewCode(voice.code);
           previewAudioRef.current.onended = () => setPlayingPreviewCode(null);

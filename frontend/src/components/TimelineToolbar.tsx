@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEditorStore } from '../store/useEditorStore';
+import { apiFetch } from '../utils/api';
 import {
   Scissors,
   Trash2,
@@ -35,9 +36,8 @@ export const TimelineToolbar: React.FC = () => {
   const handleDuplicate = async (createNewLayer = false) => {
     if (!selectedClipId) return;
     try {
-      const res = await fetch('/api/timeline/duplicate_clip', {
+      const res = await apiFetch('/api/timeline/duplicate_clip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId: selectedClipId, createNewLayer })
       });
       if (res.ok) {
@@ -51,9 +51,8 @@ export const TimelineToolbar: React.FC = () => {
 
   const handleAddTrack = async (trackType: 'video' | 'audio' | 'subtitle') => {
     try {
-      const res = await fetch('/api/timeline/add_track', {
+      const res = await apiFetch('/api/timeline/add_track', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ trackType })
       });
       if (res.ok) {

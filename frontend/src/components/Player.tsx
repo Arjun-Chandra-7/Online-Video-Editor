@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useEditorStore } from '../store/useEditorStore';
+import { resolveAssetUrl } from '../utils/api';
 import {
   Play,
   Pause,
@@ -80,21 +81,22 @@ export const Player: React.FC = () => {
 
           const lowFilter = ctx.createBiquadFilter();
           lowFilter.type = 'lowshelf';
-          lowFilter.frequency.value = 120;
+          lowFilter.frequency.value = 320;
           lowFilter.gain.value = 0;
 
           const midFilter = ctx.createBiquadFilter();
           midFilter.type = 'peaking';
-          midFilter.frequency.value = 1500;
+          midFilter.frequency.value = 1000;
+          midFilter.Q.value = 1;
           midFilter.gain.value = 0;
 
           const highFilter = ctx.createBiquadFilter();
           highFilter.type = 'highshelf';
-          highFilter.frequency.value = 4500;
+          highFilter.frequency.value = 3200;
           highFilter.gain.value = 0;
 
           const gainNode = ctx.createGain();
-          gainNode.gain.value = masterVolume;
+          gainNode.gain.setValueAtTime(effectiveVolume, ctx.currentTime);
 
           src.connect(lowFilter);
           lowFilter.connect(midFilter);
@@ -110,7 +112,7 @@ export const Player: React.FC = () => {
         }
       }
     } catch (e) {
-      console.warn("Web Audio API initialization note:", e);
+      console.warn("Web Audio Context initialization warning", e);
     }
   }, []);
 
@@ -170,8 +172,9 @@ export const Player: React.FC = () => {
       aud.load();
       return;
     }
-    const separator = activeAudioClip.assetUrl.includes('?') ? '&' : '?';
-    aud.src = `${activeAudioClip.assetUrl}${separator}v=${audioVersion}`;
+    const resolvedAudio = resolveAssetUrl(activeAudioClip.assetUrl);
+    const separator = resolvedAudio.includes('?') ? '&' : '?';
+    aud.src = `${resolvedAudio}${separator}v=${audioVersion}`;
     aud.load();
     aud.volume = gainNodeRef.current ? 1 : Math.min(1, effectiveVolume);
   }, [audioVersion, activeAudioClip?.assetUrl]);
@@ -183,9 +186,10 @@ export const Player: React.FC = () => {
 
     const clipOffset = Math.max(0, (playhead - activeVideoClip.timelineStart) + (activeVideoClip.sourceStart || 0));
     const currentSrc = vid.getAttribute('src');
+    const resolvedVideo = resolveAssetUrl(activeVideoClip.assetUrl);
 
-    if (currentSrc !== activeVideoClip.assetUrl) {
-      vid.src = activeVideoClip.assetUrl;
+    if (currentSrc !== resolvedVideo) {
+      vid.src = resolvedVideo;
       vid.load();
       vid.onloadedmetadata = () => {
         const safeTime = Math.min(clipOffset, vid.duration || 1000);

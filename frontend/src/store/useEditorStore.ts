@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { TimelineProject, Clip, Track, CaptionItem, AgentActivity } from '../types/timeline';
+import { apiFetch, getWsUrl, DEFAULT_DEMO_PROJECT } from '../utils/api';
 
 interface EditorStore {
   project: TimelineProject | null;
@@ -7,6 +8,7 @@ interface EditorStore {
   selectedTrackId: string | null;
   selectedCaptionId: string | null;
   isPlaying: boolean;
+  isBackendConnected: boolean;
   zoom: number;
   timelineZoom: number;
   audioVersion: number;
@@ -112,6 +114,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   selectedTrackId: null,
   selectedCaptionId: null,
   isPlaying: false,
+  isBackendConnected: false,
   zoom: 16,
   timelineZoom: 16,
   audioVersion: Date.now(),
@@ -138,381 +141,407 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   activeEqPreset: 'flat',
 
   init: () => {
-    fetch('/api/status')
+    apiFetch('/api/status')
       .then(res => res.json())
       .then(st => {
-        if (st.hardware) set({ hardwareInfo: st.hardware });
+        if (st.hardware) set({ hardwareInfo: st.hardware, isBackendConnected: true });
       })
-      .catch(() => {});
+      .catch(() => {
+        set({ isBackendConnected: false });
+      });
 
-    fetch('/api/timeline')
+    apiFetch('/api/timeline')
       .then(res => res.json())
       .then(data => {
-        set({ project: data });
-      })
-      .catch(err => console.error("Initial timeline fetch error:", err));
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.event === 'TIMELINE_UPDATED') {
-          set({ project: msg.data });
-        } else if (msg.event === 'AGENT_ACTIVITY') {
-          get().addActivity(msg.data);
+        if (data && data.clips) {
+          set({ project: data, isBackendConnected: true });
+        } else {
+          set({ project: DEFAULT_DEMO_PROJECT });
         }
-      } catch (e) {
-        console.error("WS Parse error", e);
-      }
-    };
+      })
+      .catch(err => {
+        console.warn("Backend timeline offline, loading interactive demo project for Vercel:", err);
+        set({ project: DEFAULT_DEMO_PROJECT, isBackendConnected: false });
+      });
+
+    try {
+      const wsUrl = getWsUrl();
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        set({ isBackendConnected: true });
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.event === 'TIMELINE_UPDATED') {
+            set({ project: msg.data, isBackendConnected: true });
+          } else if (msg.event === 'AGENT_ACTIVITY') {
+            get().addActivity(msg.data);
+          }
+        } catch (e) {
+          console.error("WS Parse error", e);
+        }
+      };
+
+      ws.onerror = () => {
+        // Soft fallback
+      };
+    } catch (e) {
+      console.warn("WebSocket init error:", e);
+    }
   },
 
   setActiveTab: (tab) => set({ activeTab: tab }),
-  setLeftPanelWidth: (w) => set({ leftPanelWidth: Math.max(220, Math.min(600, w)) }),
-  setRightPanelWidth: (w) => set({ rightPanelWidth: Math.max(220, Math.min(500, w)) }),
-  setTimelineHeight: (h) => set({ timelineHeight: Math.max(160, Math.min(450, h)) }),
+  setLeftPanelWidth: (w) => set({ leftPanelWidth: Math.max(200, Math.min(600, w)) }),
+  setRightPanelWidth: (w) => set({ rightPanelWidth: Math.max(200, Math.min(500, w)) }),
+  setTimelineHeight: (h) => set({ timelineHeight: Math.max(120, Math.min(500, h)) }),
   setProject: (proj) => set({ project: proj }),
-  setPlayhead: (time) => {
-    const p = get().project;
-    if (p) {
-      const dur = p.duration || 10;
-      const safeTime = Math.max(0, Math.min(dur, time));
-      set({ project: { ...p, playhead: safeTime } });
-    }
-  },
+  setPlayhead: (time) => set((state) => ({
+    project: state.project ? { ...state.project, playhead: time } : null
+  })),
   setIsPlaying: (playing) => set({ isPlaying: playing }),
-  togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
-  setZoom: (zoom) => set({ zoom: Math.max(4, Math.min(80, zoom)), timelineZoom: Math.max(4, Math.min(80, zoom)) }),
-  setTimelineZoom: (zoom) => get().setZoom(zoom),
-  toggleSnapping: () => set((s) => ({ snappingEnabled: !s.snappingEnabled })),
+  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
+  setZoom: (zoom) => set({ zoom, timelineZoom: zoom }),
+  setTimelineZoom: (timelineZoom) => set({ timelineZoom, zoom: timelineZoom }),
+  toggleSnapping: () => set((state) => ({ snappingEnabled: !state.snappingEnabled })),
   setActiveTool: (tool) => set({ activeTool: tool }),
   selectClip: (clipId) => set({ selectedClipId: clipId, selectedCaptionId: null }),
   selectTrack: (trackId) => set({ selectedTrackId: trackId }),
   selectCaption: (captionId) => set({ selectedCaptionId: captionId, selectedClipId: null }),
-  addActivity: (activity) => set((s) => ({
-    activities: [activity, ...s.activities.slice(0, 40)],
-    agentLogs: [activity, ...s.agentLogs.slice(0, 40)]
+  addActivity: (activity) => set((state) => ({
+    activities: [activity, ...state.activities].slice(0, 50),
+    agentLogs: [activity, ...state.agentLogs].slice(0, 50)
   })),
   setActiveScriptText: (text) => set({ activeScriptText: text }),
   setActiveVoiceCode: (code) => set({ activeVoiceCode: code }),
   setSelectedFont: (font) => set({ selectedFont: font }),
+  setAudioEQPreset: (preset) => set({ activeEqPreset: preset }),
 
   updateProjectSettings: async (settings) => {
-    const response = await fetch('/api/project/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings)
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Unable to update sequence settings');
-    if (data.timeline) set({ project: data.timeline });
+    try {
+      const response = await apiFetch('/api/project/settings', {
+        method: 'POST',
+        body: JSON.stringify(settings)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ project: data.timeline });
+      }
+    } catch (e) {
+      console.error("Error updating settings", e);
+    }
   },
 
   updateClipAudio: async (clipId, audio) => {
-    const response = await fetch('/api/timeline/audio', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clipId, ...audio })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Unable to update clip audio');
-    if (data.timeline) set({ project: data.timeline });
+    try {
+      const response = await apiFetch('/api/timeline/audio', {
+        method: 'POST',
+        body: JSON.stringify({ clipId, ...audio })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ project: data.timeline });
+      }
+    } catch (e) {
+      console.error("Error updating clip audio", e);
+    }
   },
 
   updateClipTransition: async (clipId, transition) => {
-    const response = await fetch('/api/timeline/transition', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clipId, ...transition })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Unable to update transition');
-    if (data.timeline) set({ project: data.timeline });
+    try {
+      const response = await apiFetch('/api/timeline/transition', {
+        method: 'POST',
+        body: JSON.stringify({ clipId, ...transition })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ project: data.timeline });
+      }
+    } catch (e) {
+      console.error("Error updating clip transition", e);
+    }
   },
 
   saveProject: async () => {
-    const response = await fetch('/api/project/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Unable to save project');
-    return data;
+    try {
+      const response = await apiFetch('/api/project/save', {
+        method: 'POST',
+        body: JSON.stringify({ filename: get().project?.title || 'project.json' })
+      });
+      return await response.json();
+    } catch (e) {
+      console.error("Error saving project", e);
+      return { success: false, error: String(e) };
+    }
   },
 
   splitClipAtPlayhead: async () => {
     const { project, selectedClipId } = get();
     if (!project) return;
     const playhead = project.playhead;
-    const clip = selectedClipId
+    const clipToSplit = selectedClipId
       ? project.clips.find(c => c.id === selectedClipId)
-      : project.clips.find(c => c.timelineStart <= playhead && c.timelineEnd >= playhead);
+      : project.clips.find(c => playhead >= c.timelineStart && playhead <= c.timelineEnd);
 
-    if (clip && playhead > clip.timelineStart && playhead < clip.timelineEnd) {
-      await get().splitClipAtTime(clip.id, playhead);
+    if (clipToSplit) {
+      await get().splitClipAtTime(clipToSplit.id, playhead);
     }
   },
 
   splitClipAtTime: async (clipId, time) => {
     try {
-      const res = await fetch('/api/timeline/split', {
+      const res = await apiFetch('/api/timeline/split', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, splitTime: time })
       });
-      const data = await res.json();
-      if (data.success) {
+      if (res.ok) {
+        const data = await res.json();
         set({ project: data.timeline });
       }
     } catch (e) {
-      console.error("Split clip error", e);
+      console.error("Error splitting clip", e);
     }
   },
 
   splitClip: async (clipId, time) => {
-    return get().splitClipAtTime(clipId, time);
+    await get().splitClipAtTime(clipId, time);
   },
 
   trimClip: async (clipId, newStart, newEnd) => {
     try {
-      const res = await fetch('/api/timeline/trim', {
+      const res = await apiFetch('/api/timeline/trim', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, newStart, newEnd })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Trim clip error", e);
+      console.error("Error trimming clip", e);
     }
   },
 
   moveClip: async (clipId, newStart, newTrackId) => {
     try {
-      const res = await fetch('/api/timeline/move', {
+      const res = await apiFetch('/api/timeline/move', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, newStart, newTrackId })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Move clip error", e);
+      console.error("Error moving clip", e);
     }
   },
 
   duplicateClip: async (clipId, createNewLayer = false) => {
     try {
-      const res = await fetch('/api/timeline/duplicate_clip', {
+      const res = await apiFetch('/api/timeline/duplicate_clip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, createNewLayer })
       });
-      const data = await res.json();
-      if (data.success) {
-        set({ project: data.timeline, selectedClipId: data.clip.id });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
       }
     } catch (e) {
-      console.error("Duplicate clip error", e);
+      console.error("Error duplicating clip", e);
     }
   },
 
   deleteClip: async (clipId) => {
-    try {
-      const res = await fetch('/api/timeline/ripple_delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clipId })
-      });
-      const data = await res.json();
-      if (data.success) {
-        set({ project: data.timeline, selectedClipId: null });
-      }
-    } catch (e) {
-      console.error("Delete clip error", e);
-    }
+    await get().rippleDelete(clipId);
   },
 
   rippleDelete: async (clipId) => {
-    return get().deleteClip(clipId);
+    try {
+      const res = await apiFetch('/api/timeline/ripple_delete', {
+        method: 'POST',
+        body: JSON.stringify({ clipId })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        set({
+          project: data.timeline,
+          selectedClipId: get().selectedClipId === clipId ? null : get().selectedClipId
+        });
+      }
+    } catch (e) {
+      console.error("Error ripple deleting clip", e);
+    }
   },
 
   addTrack: async (type, name) => {
     try {
-      const res = await fetch('/api/timeline/add_track', {
+      const res = await apiFetch('/api/timeline/add_track', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ trackType: type, name })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Add track error", e);
+      console.error("Error adding track", e);
     }
   },
 
-  addClipToTrack: async (trackId, assetId, startTime, duration = 4.0, assetUrl, assetName, assetType) => {
+  addClipToTrack: async (trackId, assetId, startTime, duration = 4.0, assetUrl, assetName, assetType = 'video') => {
     try {
-      const res = await fetch('/api/timeline/add_clip', {
+      const res = await apiFetch('/api/timeline/add_clip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trackId, assetId, startTime, duration, assetUrl, assetName, assetType })
+        body: JSON.stringify({
+          trackId,
+          assetId,
+          startTime,
+          duration,
+          assetUrl,
+          assetName,
+          assetType,
+          replaceTrack: false
+        })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Add clip to track error", e);
+      console.error("Error adding clip to track", e);
     }
   },
 
   applyEffect: async (clipId, effectId) => {
-    const targetId = clipId || get().selectedClipId || get().project?.clips.find(c => c.trackId === 'trk_v1')?.id;
-    if (!targetId) return;
-
-    set(state => {
-      if (!state.project) return {};
-      const clips = state.project.clips.map(c => {
-        if (c.id === targetId) {
-          const curEffects = c.effects || [];
-          const exists = curEffects.includes(effectId);
-          const nextEffects = exists ? curEffects.filter(e => e !== effectId) : [...curEffects, effectId];
-          return { ...c, effects: nextEffects };
-        }
-        return c;
-      });
-      return { project: { ...state.project, clips } };
-    });
-
     try {
-      const res = await fetch('/api/timeline/apply_effect', {
+      const res = await apiFetch('/api/timeline/apply_effect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clipId: targetId, effectId })
+        body: JSON.stringify({ clipId, effectId })
       });
-      const data = await res.json();
-      if (data.timeline) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Apply effect error", e);
+      console.error("Error applying effect", e);
     }
   },
 
-  setAudioEQPreset: (preset: string) => {
-    set({ activeEqPreset: preset });
-    window.dispatchEvent(new CustomEvent('AUDIO_EQ_CHANGED', { detail: { preset } }));
-  },
-
   toggleTrackState: async (trackId, field) => {
-    const p = get().project;
-    if (!p) return;
-    const track = p.tracks.find(t => t.id === trackId);
+    const track = get().project?.tracks.find(t => t.id === trackId);
     if (!track) return;
-    const newVal = !track[field];
-    await get().setTrackState(trackId, field === 'muted' ? newVal : undefined, field === 'locked' ? newVal : undefined, field === 'visible' ? newVal : undefined);
+    const payload = {
+      trackId,
+      muted: field === 'muted' ? !track.muted : track.muted,
+      locked: field === 'locked' ? !track.locked : track.locked,
+      visible: field === 'visible' ? !track.visible : track.visible,
+    };
+    await get().setTrackState(trackId, payload.muted, payload.locked, payload.visible);
   },
 
   setClipSpeed: async (clipId, speed, isReversed, isFrozen) => {
     try {
-      const res = await fetch('/api/timeline/speed', {
+      const res = await apiFetch('/api/timeline/speed', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, speed, isReversed, isFrozen })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Set speed error", e);
+      console.error("Error setting speed", e);
     }
   },
 
-  addKeyframe: async (clipId, property, value, timePos, easing = "ease-in-out") => {
+  addKeyframe: async (clipId, property, value, timePos, easing = 'ease-in-out') => {
     try {
-      const res = await fetch('/api/timeline/keyframe', {
+      const res = await apiFetch('/api/timeline/keyframe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, property, value, time: timePos, easing })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Add keyframe error", e);
+      console.error("Error adding keyframe", e);
     }
   },
 
   deleteKeyframe: async (clipId, keyframeId) => {
     try {
-      const res = await fetch('/api/timeline/keyframe/delete', {
+      const res = await apiFetch('/api/timeline/keyframe/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clipId, keyframeId })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Delete keyframe error", e);
+      console.error("Error deleting keyframe", e);
     }
   },
 
-  addMarker: async (timePos, label, color = "#EF4444", category = "hook") => {
+  addMarker: async (timePos, label, color = '#EF4444', category = 'hook') => {
     try {
-      const res = await fetch('/api/timeline/marker', {
+      const res = await apiFetch('/api/timeline/marker', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ time: timePos, label, color, category })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Add marker error", e);
+      console.error("Error adding marker", e);
     }
   },
 
   deleteMarker: async (markerId) => {
     try {
-      const res = await fetch('/api/timeline/marker/delete', {
+      const res = await apiFetch('/api/timeline/marker/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markerId })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Delete marker error", e);
+      console.error("Error deleting marker", e);
     }
   },
 
   deleteTranscriptRange: async (startTime, endTime) => {
     try {
-      set({ isProcessing: true });
-      const res = await fetch('/api/transcript/delete_range', {
+      const res = await apiFetch('/api/transcript/delete_range', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startTime, endTime })
       });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Delete transcript range error", e);
-    } finally {
-      set({ isProcessing: false });
+      console.error("Error deleting transcript range", e);
     }
   },
 
   removeFillerWords: async () => {
     try {
       set({ isProcessing: true });
-      const res = await fetch('/api/ai/remove_fillers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
-      const data = await res.json();
-      if (data.success) set({ project: data.timeline });
+      const res = await apiFetch('/api/ai/remove_fillers', { method: 'POST', body: '{}' });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Remove fillers error", e);
+      console.error("Error removing fillers", e);
     } finally {
       set({ isProcessing: false });
     }
@@ -520,126 +549,108 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   fetchAiHooks: async () => {
     try {
-      const res = await fetch('/api/ai/hooks');
-      const data = await res.json();
-      if (data.hooks) set({ hooks: data.hooks });
+      const res = await apiFetch('/api/ai/hooks');
+      if (res.ok) {
+        const data = await res.json();
+        set({ hooks: data.hooks });
+      }
     } catch (e) {
-      console.error("Fetch hooks error", e);
+      console.error("Error fetching AI hooks", e);
     }
   },
 
   fetchEnergyCurve: async () => {
     try {
-      const res = await fetch('/api/ai/energy_curve');
-      const data = await res.json();
-      if (data.curve) set({ energyCurve: data.curve });
+      const res = await apiFetch('/api/ai/energy_curve');
+      if (res.ok) {
+        const data = await res.json();
+        set({ energyCurve: data.curve });
+      }
     } catch (e) {
-      console.error("Fetch energy curve error", e);
+      console.error("Error fetching energy curve", e);
     }
   },
 
   updateClipTransform: async (clipId, transform) => {
-    const targetId = clipId || get().selectedClipId || get().project?.clips.find(c => c.trackId === 'trk_v1')?.id;
-    if (targetId) {
-      set(state => {
-        if (!state.project) return {};
-        const clips = state.project.clips.map(c => {
-          if (c.id === targetId) {
-            return { ...c, transform: { ...c.transform, ...transform } };
-          }
-          return c;
-        });
-        return { project: { ...state.project, clips } };
-      });
-    }
-
     try {
-      await fetch('/api/timeline/transform', {
+      const res = await apiFetch('/api/timeline/transform', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clipId: targetId, ...transform })
+        body: JSON.stringify({
+          clipId,
+          scale: transform.scale,
+          posX: transform.posX,
+          posY: transform.posY,
+          rotation: transform.rotation,
+          opacity: transform.opacity,
+          flipH: transform.flipH,
+          flipV: transform.flipV
+        })
       });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Update transform error", e);
+      console.error("Error updating transform", e);
     }
   },
 
   updateClipColor: async (clipId, colorGrading) => {
-    const targetId = clipId || get().selectedClipId || get().project?.clips.find(c => c.trackId === 'trk_v1')?.id;
-    if (targetId) {
-      set(state => {
-        if (!state.project) return {};
-        const clips = state.project.clips.map(c => {
-          if (c.id === targetId) {
-            return { ...c, colorGrading: { ...c.colorGrading, ...colorGrading } };
-          }
-          return c;
-        });
-        return { project: { ...state.project, clips } };
-      });
-    }
-
-    try {
-      await fetch('/api/timeline/color_grading', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clipId: targetId, ...colorGrading })
-      });
-    } catch (e) {
-      console.error("Update color error", e);
-    }
+    await get().updateClipColorGrading(clipId, colorGrading);
   },
 
   updateClipColorGrading: async (clipId, colorGrading) => {
-    return get().updateClipColor(clipId, colorGrading);
+    try {
+      const res = await apiFetch('/api/timeline/color_grading', {
+        method: 'POST',
+        body: JSON.stringify({ clipId, ...colorGrading })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
+    } catch (e) {
+      console.error("Error updating color grading", e);
+    }
   },
 
   updateCaption: async (captionId, text, style, applyToAll = false) => {
     try {
-      const res = await fetch('/api/timeline/caption_update', {
+      const res = await apiFetch('/api/timeline/caption_update', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ captionId, text, style, applyToAll })
       });
-      const data = await res.json();
-      if (data.timeline) set({ project: data.timeline });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Update caption error", e);
+      console.error("Error updating caption", e);
     }
   },
 
   setTrackState: async (trackId, muted, locked, visible) => {
     try {
-      await fetch('/api/timeline/track_state', {
+      const res = await apiFetch('/api/timeline/track_state', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ trackId, muted, locked, visible })
       });
-      set(state => {
-        if (!state.project) return {};
-        const tracks = state.project.tracks.map(t => {
-          if (t.id === trackId) {
-            return {
-              ...t,
-              muted: muted !== undefined ? muted : t.muted,
-              locked: locked !== undefined ? locked : t.locked,
-              visible: visible !== undefined ? visible : t.visible
-            };
-          }
-          return t;
-        });
-        return { project: { ...state.project, tracks } };
-      });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
-      console.error("Set track state error", e);
+      console.error("Error updating track state", e);
     }
   },
 
   undo: async () => {
     try {
-      const res = await fetch('/api/timeline/undo', { method: 'POST' });
-      const data = await res.json();
-      if (data.timeline) set({ project: data.timeline });
+      const res = await apiFetch('/api/timeline/undo', { method: 'POST', body: '{}' });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
       console.error("Undo error", e);
     }
@@ -647,20 +658,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   redo: async () => {
     try {
-      const res = await fetch('/api/timeline/redo', { method: 'POST' });
-      const data = await res.json();
-      if (data.timeline) set({ project: data.timeline });
+      const res = await apiFetch('/api/timeline/redo', { method: 'POST', body: '{}' });
+      if (res.ok) {
+        const data = await res.json();
+        set({ project: data.timeline });
+      }
     } catch (e) {
       console.error("Redo error", e);
     }
   },
 
-  autoCaption: async (rawText = '', preset = 'auto', voiceCode = 'VOICE_CHRIS_CREATOR', rate = '+18%', autoDetectAudio = true) => {
+  autoCaption: async (rawText, preset = 'auto', voiceCode = 'VOICE_CHRIS_CREATOR', rate = '+18%', autoDetectAudio = true) => {
     try {
       set({ isProcessing: true });
-      const res = await fetch('/api/ai/auto_caption', {
+      const res = await apiFetch('/api/ai/auto_caption', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rawText, preset, voiceCode, rate, autoDetectAudio })
       });
       const data = await res.json();
@@ -669,99 +681,121 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
       return data;
     } catch (e) {
-      console.error("Auto caption error", e);
-      return null;
+      console.error("Auto-caption error", e);
+      return { success: false, error: String(e) };
     } finally {
       set({ isProcessing: false });
     }
   },
 
-  triggerAutoCaption: async (rawTextOrPreset?: string, voiceCode?: string, preset?: string) => {
-    const text = (voiceCode || preset) ? (rawTextOrPreset || get().activeScriptText) : get().activeScriptText;
-    const voice = voiceCode || get().activeVoiceCode;
-    const prst = preset || (voiceCode ? 'hero_depth_action' : (rawTextOrPreset || 'auto'));
-    return get().autoCaption(text, prst, voice, '+18%', true);
+  triggerAutoCaption: async (rawTextOrPreset, voiceCode, preset) => {
+    return await get().autoCaption(rawTextOrPreset, preset, voiceCode);
   },
 
   removeSilence: async (minDuration = 0.4) => {
     try {
       set({ isProcessing: true });
-      const res = await fetch('/api/ai/remove_silence', {
+      const res = await apiFetch('/api/ai/remove_silence', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ minDuration })
       });
       const data = await res.json();
-      if (data.timeline) set({ project: data.timeline });
+      if (data.timeline) {
+        set({ project: data.timeline });
+      }
       return data;
     } catch (e) {
-      console.error("Remove silence error", e);
-      return null;
+      console.error("Silence removal error", e);
+      return { success: false, error: String(e) };
     } finally {
       set({ isProcessing: false });
     }
   },
 
   triggerSilenceRemoval: async () => {
-    return get().removeSilence(0.4);
+    return await get().removeSilence();
   },
 
   punchInZoom: async (zoomFactor = 1.22) => {
     try {
       set({ isProcessing: true });
-      const res = await fetch('/api/ai/punch_in_zoom', {
+      const res = await apiFetch('/api/ai/punch_in_zoom', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ zoomFactor })
       });
       const data = await res.json();
-      if (data.timeline) set({ project: data.timeline });
+      if (data.timeline) {
+        set({ project: data.timeline });
+      }
       return data;
     } catch (e) {
       console.error("Punch in zoom error", e);
-      return null;
+      return { success: false, error: String(e) };
     } finally {
       set({ isProcessing: false });
     }
   },
 
   triggerPunchInZoom: async () => {
-    return get().punchInZoom(1.22);
+    return await get().punchInZoom();
   },
 
   triggerCaptionsGeneration: async () => {
-    return get().autoCaption(get().activeScriptText, 'hero_depth_action', get().activeVoiceCode, '+18%', true);
+    try {
+      set({ isProcessing: true });
+      const res = await apiFetch('/api/ai/generate_captions', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      if (data.timeline) {
+        set({ project: data.timeline });
+      }
+      return data;
+    } catch (e) {
+      console.error("Generate captions error", e);
+      return { success: false, error: String(e) };
+    } finally {
+      set({ isProcessing: false });
+    }
   },
 
   fetchPacingAnalysis: async () => {
     try {
-      const res = await fetch('/api/ai/pacing_analysis');
-      const data = await res.json();
-      set({ pacingData: data, pacingAudit: data });
+      const res = await apiFetch('/api/ai/pacing_analysis');
+      if (res.ok) {
+        const data = await res.json();
+        set({ pacingData: data });
+      }
     } catch (e) {
-      console.error("Pacing analysis error", e);
+      console.error("Error fetching pacing analysis", e);
     }
   },
 
   fetchPacingAudit: async () => {
-    return get().fetchPacingAnalysis();
+    try {
+      const res = await apiFetch('/api/ai/pacing_analysis');
+      if (res.ok) {
+        const data = await res.json();
+        set({ pacingAudit: data });
+      }
+    } catch (e) {
+      console.error("Error fetching pacing audit", e);
+    }
   },
 
   exportProject: async (options = {}) => {
     try {
-      set({ isExporting: true });
-      const res = await fetch('/api/export', {
+      set({ isExporting: true, exportResult: null });
+      const res = await apiFetch('/api/export', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: 'exported_reel.mp4', ...options })
+        body: JSON.stringify(options)
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Export request failed');
       set({ exportResult: data });
       return data;
     } catch (e) {
       console.error("Export error", e);
-      return null;
+      const err = { status: 'failed', error: String(e) };
+      set({ exportResult: err });
+      return err;
     } finally {
       set({ isExporting: false });
     }

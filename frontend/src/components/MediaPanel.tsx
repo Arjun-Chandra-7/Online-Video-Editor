@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useEditorStore } from '../store/useEditorStore';
+import { apiFetch, resolveAssetUrl } from '../utils/api';
 import {
   FolderOpen,
   Film,
@@ -31,7 +32,7 @@ export const MediaPanel: React.FC = () => {
     formData.append('file', file);
 
     try {
-      const res = await fetch('/api/media/upload', {
+      const res = await apiFetch('/api/media/upload', {
         method: 'POST',
         body: formData
       });
@@ -51,9 +52,8 @@ export const MediaPanel: React.FC = () => {
   const handleInsertClip = async (asset: Asset, trackId: string) => {
     const playheadTime = project?.playhead || 0;
     try {
-      const res = await fetch('/api/timeline/add_clip', {
+      const res = await apiFetch('/api/timeline/add_clip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackId,
           assetId: asset.id,
@@ -77,9 +77,8 @@ export const MediaPanel: React.FC = () => {
 
   const handleSetMain = async (asset: Asset) => {
     try {
-      const res = await fetch('/api/timeline/add_clip', {
+      const res = await apiFetch('/api/timeline/add_clip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackId: 'trk_v1',
           assetId: asset.id,
@@ -103,9 +102,8 @@ export const MediaPanel: React.FC = () => {
 
   const handleDeleteAsset = async (assetId: string) => {
     try {
-      const res = await fetch('/api/media/delete', {
+      const res = await apiFetch('/api/media/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assetId })
       });
       if (res.ok) {

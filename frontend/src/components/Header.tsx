@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useEditorStore } from '../store/useEditorStore';
+import { resolveAssetUrl, getBackendUrl } from '../utils/api';
+import { BackendConnectModal } from './BackendConnectModal';
 import {
   Film,
   RotateCcw,
@@ -14,7 +16,9 @@ import {
   HelpCircle,
   Play,
   FileVideo,
-  ExternalLink
+  ExternalLink,
+  Server,
+  Radio
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -27,12 +31,14 @@ export const Header: React.FC = () => {
     exportResult,
     exportProject,
     pacingAudit,
-    fetchPacingAudit
+    fetchPacingAudit,
+    isBackendConnected
   } = useEditorStore();
 
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showConnectModal, setShowConnectModal] = useState(false);
   const [exportResOption, setExportResOption] = useState('1080x1920');
   const [exportFpsOption, setExportFpsOption] = useState('60');
   const [exportQuality, setExportQuality] = useState('standard');
@@ -62,6 +68,8 @@ export const Header: React.FC = () => {
       captionMode
     });
   };
+
+  const backendHost = getBackendUrl();
 
   return (
     <>
@@ -97,12 +105,21 @@ export const Header: React.FC = () => {
 
         {/* Center: System Status & History */}
         <div className="flex items-center space-x-3">
-          {/* Sub-Agent Connection Status */}
-          <div className="flex items-center space-x-1.5 bg-[#14161C] px-2.5 py-1 rounded-full border border-[#262A34] text-[10px] font-medium text-zinc-300">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>AI Sub-Agent:</span>
-            <strong className="text-emerald-400 font-mono">ONLINE</strong>
-          </div>
+          {/* Sub-Agent Connection Status / Engine Selector */}
+          <button
+            onClick={() => setShowConnectModal(true)}
+            title="Click to configure backend URL, Cloudflare tunnel, or test connection"
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full border text-[10px] font-medium transition cursor-pointer hover:scale-105 active:scale-95 ${
+              isBackendConnected
+                ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300 hover:bg-emerald-950/50'
+                : 'bg-amber-950/30 border-amber-500/40 text-amber-300 hover:bg-amber-950/50'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${isBackendConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            <span>Engine:</span>
+            <strong className="font-mono">{isBackendConnected ? (backendHost ? 'TUNNEL' : 'ONLINE') : 'DEMO MODE'}</strong>
+            <Server className="w-2.5 h-2.5 opacity-60 ml-0.5" />
+          </button>
 
           {/* Undo / Redo */}
           <div className="flex items-center space-x-1 bg-[#14161C] p-0.5 rounded-lg border border-[#262A34]">
@@ -222,7 +239,7 @@ export const Header: React.FC = () => {
 
                   <div className="pt-2 flex items-center space-x-2">
                     <a
-                      href={exportResult.downloadUrl}
+                      href={resolveAssetUrl(exportResult.downloadUrl)}
                       download={exportResult.filename}
                       className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl font-bold text-xs shadow-md shadow-emerald-600/30 transition flex items-center justify-center space-x-2"
                     >
@@ -230,7 +247,7 @@ export const Header: React.FC = () => {
                       <span>Download Rendered MP4</span>
                     </a>
                     <a
-                      href={exportResult.captionDownloadUrl || '/api/captions/srt'}
+                      href={resolveAssetUrl(exportResult.captionDownloadUrl || '/api/captions/srt')}
                       className="bg-[#242833] hover:bg-[#303544] text-zinc-200 py-2.5 px-3 rounded-xl font-bold text-xs transition"
                     >
                       SRT
@@ -432,6 +449,12 @@ export const Header: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* 4. BACKEND CONNECTION & CLOUD TUNNEL MODAL */}
+      <BackendConnectModal
+        isOpen={showConnectModal}
+        onClose={() => setShowConnectModal(false)}
+      />
     </>
   );
 };
