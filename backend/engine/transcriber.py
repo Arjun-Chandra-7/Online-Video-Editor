@@ -13,7 +13,7 @@ def get_whisper_model():
     if _whisper_model is None:
         try:
             import faster_whisper
-            _whisper_model = faster_whisper.WhisperModel("tiny.en", device="cpu", compute_type="int8")
+            _whisper_model = faster_whisper.WhisperModel("tiny", device="cpu", compute_type="int8")
         except Exception as e:
             print(f"Faster-Whisper init error: {e}")
             _whisper_model = None
@@ -81,7 +81,6 @@ class AudioTranscriber:
                 segments, info = model.transcribe(
                     str(media_path),
                     word_timestamps=True,
-                    vad_filter=True,
                     beam_size=5
                 )
 

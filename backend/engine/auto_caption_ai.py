@@ -145,12 +145,9 @@ class AutoCaptionAI:
         boundaries = speech_boundaries or []
 
         if not boundaries:
-            text_to_process = raw_text.strip() if raw_text.strip() else (
-                "BERT versus GPT. Both are derived from the transformer neural network architecture. "
-                "A sequence is typically an ordered set of data in natural language processing. "
-                "BERT is a stack of transformer encoders and GPT is a stack of transformer decoders. "
-                "Both are pretrained to understand language, then fine tuned with supervised data."
-            )
+            text_to_process = raw_text.strip()
+            if not text_to_process:
+                return []
             words = text_to_process.split()
             card_size = 4
             chunks = [words[i:i + card_size] for i in range(0, len(words), card_size)]
@@ -169,11 +166,9 @@ class AutoCaptionAI:
                 })
 
         power_action_words = {
-            "BERT", "GPT", "TRANSFORMER", "NETWORK", "ENCODERS",
-            "DECODERS", "DATA", "LANGUAGE", "SENTENCE", "ARCHITECTURE",
-            "PRETRAINED", "OBJECTIVE", "DECISION", "LEARNING", "MODEL", "VERSUS",
-            "BIGGEST", "MISTAKE", "FOUNDERS", "HIRING", "TIME", "GROWTH", "SCALE",
-            "VIRAL", "REVENUE", "AI", "FRAMEWORK", "SECRET", "STOP", "PROFIT"
+            "SECRET", "STOP", "PROFIT", "VIRAL", "GROWTH", "SCALE",
+            "MONEY", "HOW", "WHY", "NEVER", "ALWAYS", "WATCH", "WAIT",
+            "LOOK", "FIRST", "TRUTH", "FAIL", "WIN", "POWER"
         }
 
         # Resolve Preset Configuration

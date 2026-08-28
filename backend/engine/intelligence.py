@@ -34,27 +34,29 @@ class IntelligenceEngine:
 
     @staticmethod
     def generate_viral_hooks(project: TimelineProject) -> List[Dict[str, Any]]:
+        main_clip = next((c for c in project.clips if c.trackId == "trk_v1"), None)
+        title = (main_clip.name if main_clip else project.title or "Viral Reel").replace(".mp4", "").replace("_", " ")
         return [
             {
                 "id": "hook_1",
-                "title": "⚡ The 60-Second AI Battle",
-                "sub": "BERT vs GPT: The Real Architecture Difference",
+                "title": f"⚡ The 1 Secret About {title[:24]}",
+                "sub": "High-Retention Pattern Interrupt",
                 "style": "High-Curiosity Challenge",
                 "retentionPotential": "94%",
                 "estimatedGain": "+38% View-Through Rate"
             },
             {
                 "id": "hook_2",
-                "title": "🚨 Stop Confusing BERT and GPT!",
-                "sub": "Encoders vs Decoders in Under 60 Seconds",
+                "title": f"🚨 Stop Making This Mistake ({title[:20]})",
+                "sub": "Instant Pattern Break in First 3s",
                 "style": "Contrarian / Pattern Interrupt",
                 "retentionPotential": "91%",
                 "estimatedGain": "+44% Completion Rate"
             },
             {
                 "id": "hook_3",
-                "title": "🧠 1 Transformer Trick You Never Knew",
-                "sub": "Masked LM vs Next-Word Prediction",
+                "title": f"🧠 The Hidden Truth Nobody Mentions",
+                "sub": f"Insider Breakdown of {title[:20]}",
                 "style": "Insider Knowledge",
                 "retentionPotential": "88%",
                 "estimatedGain": "+29% Shares"
