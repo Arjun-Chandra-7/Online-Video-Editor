@@ -81,7 +81,6 @@ class AudioTranscriber:
                 segments, info = model.transcribe(
                     str(media_path),
                     word_timestamps=True,
-                    initial_prompt="BERT versus GPT. Transformer architecture in natural language processing. Encoders and decoders.",
                     vad_filter=True,
                     beam_size=5
                 )

@@ -337,7 +337,7 @@ def job_auto_caption(body: Dict[str, Any]):
         def run(progress, cancelled):
             if cancelled.is_set(): raise EditorError("JOB_CANCELLED", "Auto-caption job cancelled.")
             progress(0.15, "Analyzing transcript and phonetic boundaries")
-            text = raw_text.strip() or "BERT and GPT are transformer architectures."
+            text = raw_text.strip() or "Stop doing this one mistake before scaling your business."
             captions = AutoCaptionAI.analyze_and_caption_transcript(
                 raw_text=text,
                 total_duration=timeline_engine.state.duration,
@@ -1377,8 +1377,7 @@ async def ai_auto_caption(body: Dict[str, Any] = {}):
                     }
 
         text_to_synthesize = raw_text.strip() if raw_text.strip() else (
-            "BERT and GPT are derived from the Transformer network architecture. "
-            "BERT is a stack of encoders while GPT is a stack of decoders."
+            "The exact framework high performers use to scale ten times faster without burning out."
         )
 
         boundaries = await VoiceEngine.synthesize(text_to_synthesize, voice_code=voice_code, rate=rate)

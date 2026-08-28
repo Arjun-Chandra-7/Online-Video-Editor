@@ -69,17 +69,17 @@ class TimelineEngine:
 
         primary_video_url = ""
         primary_video_name = "Imported Video"
-        primary_duration = 59.61
+        primary_duration = 10.0
+
+        if user_video_files:
+            latest_vid = user_video_files[0]
+            primary_video_url = f"/api/assets/{latest_vid.name}"
+            primary_video_name = re.sub(r'^user_\d+_', '', latest_vid.name).replace('_', ' ')
+            primary_duration = max(1.0, AudioTranscriber.get_media_duration(latest_vid))
 
         for vf in user_video_files:
             clean_name = re.sub(r'^user_\d+_', '', vf.name).replace('_', ' ')
             dur = AudioTranscriber.get_media_duration(vf)
-
-            if "BERT" in vf.name:
-                primary_video_url = f"/api/assets/{vf.name}"
-                primary_video_name = clean_name
-                primary_duration = dur
-
             assets.append(Asset(
                 id=f"ast_{vf.stem}",
                 name=clean_name,
@@ -91,19 +91,15 @@ class TimelineEngine:
 
         for af in user_audio_files:
             clean_name = re.sub(r'^user_\d+_', '', af.name).replace('_', ' ')
+            dur = AudioTranscriber.get_media_duration(af)
             assets.append(Asset(
                 id=f"ast_{af.stem}",
                 name=clean_name,
                 url=f"/api/assets/{af.name}",
                 type="audio",
-                duration=primary_duration,
+                duration=dur,
                 tags=["user_audio"]
             ))
-
-        if not primary_video_url and user_video_files:
-            primary_video_url = f"/api/assets/{user_video_files[0].name}"
-            primary_video_name = re.sub(r'^user_\d+_', '', user_video_files[0].name).replace('_', ' ')
-            primary_duration = AudioTranscriber.get_media_duration(user_video_files[0])
 
         clips = []
         if primary_video_url:
@@ -124,24 +120,6 @@ class TimelineEngine:
                 colorGrading=ColorGrading(exposure=0.0, contrast=1.05, temperature=0.0, tint=0.0, saturation=1.05),
                 effects=[]
             ))
-
-        clips.append(Clip(
-            id="clip_voice_a1",
-            trackId="trk_a1",
-            assetId="asset_voiceover",
-            assetUrl="/api/assets/voiceover.mp3",
-            name="Voiceover Dialogue",
-            timelineStart=0.0,
-            timelineEnd=primary_duration,
-            sourceStart=0.0,
-            sourceEnd=primary_duration,
-            volume=1.0,
-            speed=1.0,
-            assetType="audio",
-            transform=ClipTransform(),
-            colorGrading=ColorGrading(),
-            effects=[]
-        ))
 
         markers = [
             TimelineMarker(id="m_hook", time=0.0, label="Viral Hook (0-3s)", color="#EF4444", category="hook"),
