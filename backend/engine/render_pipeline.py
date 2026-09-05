@@ -68,7 +68,7 @@ class RenderPipeline:
     def _has_audio_stream(cls, path: Optional[Path]) -> bool:
         if not path or not path.exists():
             return False
-        probe = cls._probe_media(path)
+        probe = cls._probe(cls.get_ffmpeg_bin(), path)
         if not probe.get("available"):
             return False
         return any(s.get("codec_type") == "audio" for s in probe.get("streams", []))
@@ -473,6 +473,9 @@ class RenderPipeline:
 
             if progress:
                 progress(0.88, "Executing comprehensive technical QA")
+            # track_map is built inside _build_command; rebuild it here with the
+            # same expression rather than relying on a name from another scope.
+            track_map = {track.id: track for track in timeline.tracks}
             expects_audio = bool([clip for clip in timeline.clips if (clip.assetType == "audio" or (clip.assetType == "video" and cls._has_audio_stream(cls._asset_path(clip.assetUrl)))) and not (track_map.get(clip.trackId) and track_map[clip.trackId].muted)])
             qa = cls._quality_assurance(ffmpeg, partial_path, width, height, fps, timeline.duration, expects_audio, timeline.captions)
             job["qa"] = qa
